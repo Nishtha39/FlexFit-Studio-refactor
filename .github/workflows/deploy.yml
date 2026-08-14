@@ -1,0 +1,127 @@
+# Deploy to Cloudflare
+#
+# Every push to `main` — whoever makes it — builds the site and ships the Worker,
+# so a backend change is visible at
+# https://flexfit-studio.amitynoidalibrary.workers.dev without anyone running
+# wrangler by hand.
+#
+# Two repository secrets are required (Settings → Secrets and variables →
+# Actions):
+#   CLOUDFLARE_API_TOKEN   a token with the "Edit Cloudflare Workers" template,
+#                          plus D1 edit if you ever add a migration step here
+#   CLOUDFLARE_ACCOUNT_ID  the account the Worker lives in
+#
+# Without them the job fails at the deploy step with an auth error rather than
+# doing something surprising.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      migrations_applied:
+        description: 'Schema change already applied to the remote D1 (pnpm db:remote)?'
+        type: boolean
+        default: false
+
+# Never let two deploys overlap, and never cancel one halfway — a cancelled
+# `wrangler deploy` can leave the rollout mid-flight.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The migration guard below diffs this push against its predecessor.
+          fetch-depth: 0
+
+      # A schema change deployed BEFORE it is applied to the remote database
+      # means every request 500s on a missing column for the whole rollout, and
+      # the failure looks like a bad deploy rather than a missing migration.
+      # The order is: apply the migration, then ship the code that needs it.
+      # This step stops the deploy so that order cannot be got wrong by accident.
+      - name: Guard — has the schema change been applied to D1?
+        if: github.event_name == 'push'
+        run: |
+          before='${{ github.event.before }}'
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+            echo "No previous commit to diff against; skipping the guard."
+            exit 0
+          fi
+          changed=$(git diff --name-only "$before" '${{ github.sha }}' -- server/db/migrations/ || true)
+          if [ -n "$changed" ]; then
+            echo "::error title=Migration not applied::This push changes the D1 schema:"
+            echo "$changed"
+            echo ""
+            echo "Apply it to the remote database FIRST:"
+            echo "    pnpm db:remote"
+            echo ""
+            echo "Then re-run this workflow from the Actions tab with"
+            echo "'Schema change already applied' ticked."
+            exit 1
+          fi
+          echo "No migration files in this push."
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # esbuild and workerd fetch a platform binary in postinstall; the
+      # allowBuilds entries in pnpm-workspace.yaml are what let them.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # output: 'export' — writes the static site to out/, which wrangler.jsonc
+      # serves as the asset directory.
+      - name: Build
+        run: pnpm exec next build
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler deploy
+
+      # Immediately after a deploy two versions briefly serve at once, so a
+      # request can still hit the old one. Testing inside that window reports
+      # failures that are really just the rollout.
+      - name: Wait for the rollout
+        run: sleep 30
+
+      # Proof the change is actually live, rather than "the upload succeeded":
+      # the site serves, the API answers with every collection, and the
+      # materialised heatmap still agrees with the check-in table.
+      #
+      # Deliberately NOT scripts/test-api.mjs — that suite issues real refunds
+      # and records real check-ins. It would write test rows into live data, and
+      # because a payment can only be refunded once it would fail on the second
+      # deploy and every deploy after it, reporting a broken pipeline when
+      # nothing is wrong. smoke.mjs only reads, so it is safe on every deploy.
+      - name: Verify the deployment
+        env:
+          BASE: https://flexfit-studio.amitynoidalibrary.workers.dev
+        run: node scripts/smoke.mjs
+
+      - name: Summary
+        if: success()
+        run: |
+          {
+            echo "### Deployed"
+            echo ""
+            echo "https://flexfit-studio.amitynoidalibrary.workers.dev"
+            echo ""
+            echo "Smoke checks passed against the live Worker."
+          } >> "$GITHUB_STEP_SUMMARY"

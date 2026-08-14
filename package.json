@@ -9,6 +9,8 @@
     "lint": "eslint .",
     "preview": "next build && wrangler dev",
     "deploy": "next build && wrangler deploy",
+    "smoke": "node scripts/smoke.mjs",
+    "test:api": "node scripts/test-api.mjs",
     "seed:dump": "node scripts/dump-seed.mjs",
     "seed:build": "node scripts/build-seed-sql.mjs",
     "db:generate": "drizzle-kit generate",

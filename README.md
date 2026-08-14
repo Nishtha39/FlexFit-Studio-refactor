@@ -45,11 +45,36 @@ pnpm seed:local       # load server/db/seed.sql
 pnpm preview          # next build && wrangler dev — the Worker, as Cloudflare runs it
 ```
 
-Deploying needs a Cloudflare account with a D1 database whose id is set in
-`wrangler.jsonc`:
+## Deploying
+
+**Pushing to `main` deploys.** `.github/workflows/deploy.yml` builds the site,
+ships the Worker, waits out the rollout window and then runs the 54-check API
+suite against the live URL — so a merged backend change is visible on the
+deployed site without anyone running wrangler, and "the deploy went green" means
+the API actually answered rather than that the upload succeeded.
+
+It needs two repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | What |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | a token created from the **Edit Cloudflare Workers** template |
+| `CLOUDFLARE_ACCOUNT_ID` | the account the Worker lives in |
+
+**A schema change is the one thing the pipeline will not do for you.** Deploying
+code before its migration reaches the database means every request 500s on a
+missing column for the whole rollout, and it presents as a broken deploy rather
+than a missing migration. So a push that touches `server/db/migrations/` is
+stopped by a guard step. Apply it first, then re-run the workflow from the
+Actions tab with *"Schema change already applied"* ticked:
 
 ```bash
-pnpm db:remote && pnpm seed:remote
+pnpm db:remote        # apply migrations to the remote D1
+pnpm seed:remote      # only when seeding a fresh database
+```
+
+Deploying by hand, if you need to:
+
+```bash
 pnpm deploy           # next build && wrangler deploy
 ```
 
@@ -106,11 +131,25 @@ world drift out from under the tests.
 ## Tests
 
 ```bash
-node scripts/test-api.mjs        # 54 checks against the API
+BASE=https://flexfit-studio...workers.dev pnpm smoke      # 14 read-only checks
+BASE=http://127.0.0.1:8789            pnpm test:api       # 54 checks — MUTATES
 ```
 
-They run against a deployed Worker. Pace them — a route that only passes when
-probed alone is not passing.
+**`test:api` writes.** It issues real refunds and records real check-ins, which
+is the only honest way to test an append-only ledger, but it means a given
+database survives roughly one run: the second finds the payment already refunded
+and fails five checks while nothing is actually wrong. **Point it at a local D1
+you can reseed, never at production.**
+
+`smoke` is the one that is safe to run anywhere, any number of times, and it is
+what the deploy workflow runs against the live site. It is not a ping — besides
+checking the site and API answer, it re-asserts the invariant most likely to
+break silently: the materialised heatmap must still agree with the check-in
+table it summarises. Nothing errors when those drift apart; the numbers just
+stop matching.
+
+Pace probes against production — a route that only passes when probed alone is
+not passing.
 
 ## Status
 
