@@ -123,11 +123,53 @@ jobs:
           fi
           echo "Both secrets are present."
 
+      # "Present" is not "accepted". A token that is expired, mis-pasted (the
+      # dashboard wraps the value across two lines, which is easy to copy
+      # badly) or scoped to another account fails inside wrangler in about two
+      # seconds with an error that does not distinguish those cases. Asking
+      # Cloudflare directly does, and none of it reveals the token.
+      - name: Are the credentials actually accepted?
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          code=$(curl -sS -o /tmp/verify.json -w '%{http_code}' \
+            https://api.cloudflare.com/client/v4/user/tokens/verify \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+          if [ "$code" != "200" ]; then
+            why=$(jq -r '[.errors[]? | "\(.code): \(.message)"] | join("; ")' /tmp/verify.json)
+            echo "::error title=Cloudflare rejected the token::HTTP $code — ${why:-no detail}. Re-copy CLOUDFLARE_API_TOKEN with the dashboard's copy button (the displayed value wraps onto two lines) and check it has not expired."
+            exit 1
+          fi
+          echo "Token accepted: $(jq -r '.result.status' /tmp/verify.json)"
+
+          # Warning, not a gate: a token can be allowed to deploy a Worker while
+          # not being allowed to read account settings, so a failure here does
+          # not by itself mean the deploy will fail.
+          acct=$(curl -sS -o /tmp/acct.json -w '%{http_code}' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+          if [ "$acct" != "200" ]; then
+            why=$(jq -r '[.errors[]? | "\(.code): \(.message)"] | join("; ")' /tmp/acct.json)
+            echo "::warning title=Account not readable with this token::HTTP $acct — ${why:-no detail}. If the deploy fails next, CLOUDFLARE_ACCOUNT_ID is the thing to check."
+          else
+            echo "Account visible: $(jq -r '.result.name' /tmp/acct.json)"
+          fi
+
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm exec wrangler deploy
+        run: |
+          set -o pipefail
+          if ! pnpm exec wrangler deploy 2>&1 | tee /tmp/deploy.log; then
+            # Surface wrangler's own words as annotations, so the reason is on
+            # the run page instead of buried in a log only admins can download.
+            tail -n 25 /tmp/deploy.log | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::${line}"
+            done
+            exit 1
+          fi
 
       # Immediately after a deploy two versions briefly serve at once, so a
       # request can still hit the old one. Testing inside that window reports
