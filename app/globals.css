@@ -1,0 +1,175 @@
+@import 'tailwindcss';
+
+/* ==========================================================================
+   FlexFit Studio — design tokens
+   Light-only, dense back-office. ONE saturated accent (plate blue) reserved
+   for primary actions + current selection. Status colors are a separate,
+   desaturated family and are NEVER used alone — always with border + label.
+   ========================================================================== */
+
+@theme inline {
+  --font-sans: 'Geist', 'Geist Fallback', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', 'Geist Mono Fallback', ui-monospace, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle: var(--subtle);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-soft: var(--primary-soft);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-destructive: var(--danger);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-border: var(--danger-border);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-border: var(--warn-border);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-good-border: var(--good-border);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-border: var(--info-border);
+  --color-neutral-chip: var(--neutral-chip);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+
+  /* stacked revenue / chart series */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+
+  /* strict 6-step type scale — nothing outside this */
+  --text-micro: 0.6875rem; /* 11px  labels, chips, table meta */
+  --text-micro--line-height: 1rem;
+  --text-sm: 0.8125rem; /* 13px  table body, dense UI */
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.9375rem; /* 15px  body copy */
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.125rem; /* 18px  section titles */
+  --text-lg--line-height: 1.625rem;
+  --text-xl: 1.5rem; /* 24px  page titles, KPI values */
+  --text-xl--line-height: 1.875rem;
+  --text-display: 2.25rem; /* 36px  kiosk only */
+  --text-display--line-height: 2.5rem;
+
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+
+  --ease-ui: cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+:root {
+  color-scheme: light;
+
+  --background: oklch(0.985 0.002 250);
+  --foreground: oklch(0.205 0.008 258);
+  --surface: oklch(1 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.205 0.008 258);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.205 0.008 258);
+  --muted: oklch(0.965 0.003 258);
+  --muted-foreground: oklch(0.535 0.011 258);
+  --subtle: oklch(0.975 0.003 258);
+
+  /* the one saturated accent: plate blue */
+  --primary: oklch(0.53 0.185 262);
+  --primary-hover: oklch(0.475 0.185 262);
+  --primary-foreground: oklch(0.99 0 0);
+  --primary-soft: oklch(0.955 0.028 262);
+
+  --secondary: oklch(1 0 0);
+  --secondary-foreground: oklch(0.265 0.009 258);
+  --accent: oklch(0.955 0.028 262);
+  --accent-foreground: oklch(0.42 0.16 262);
+
+  --border: oklch(0.912 0.004 258);
+  --border-strong: oklch(0.845 0.006 258);
+  --input: oklch(0.9 0.005 258);
+  --ring: oklch(0.53 0.185 262);
+
+  /* desaturated status family */
+  --good: oklch(0.46 0.075 155);
+  --good-soft: oklch(0.962 0.021 155);
+  --good-border: oklch(0.855 0.045 155);
+  --warn: oklch(0.5 0.09 72);
+  --warn-soft: oklch(0.965 0.032 82);
+  --warn-border: oklch(0.865 0.058 78);
+  --danger: oklch(0.5 0.14 22);
+  --danger-soft: oklch(0.963 0.021 22);
+  --danger-border: oklch(0.87 0.045 22);
+  --info: oklch(0.47 0.075 245);
+  --info-soft: oklch(0.962 0.018 245);
+  --info-border: oklch(0.865 0.036 245);
+  --neutral-chip: oklch(0.955 0.003 258);
+
+  --sidebar: oklch(0.975 0.003 258);
+  --sidebar-foreground: oklch(0.34 0.009 258);
+  --sidebar-border: oklch(0.912 0.004 258);
+  --sidebar-accent: oklch(0.945 0.005 258);
+
+  --chart-1: oklch(0.53 0.185 262);
+  --chart-2: oklch(0.62 0.09 245);
+  --chart-3: oklch(0.72 0.055 235);
+  --chart-4: oklch(0.83 0.028 250);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  /* numbers align in columns everywhere */
+  table,
+  .tnum {
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+  ::selection {
+    background: var(--primary-soft);
+  }
+}
+
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}

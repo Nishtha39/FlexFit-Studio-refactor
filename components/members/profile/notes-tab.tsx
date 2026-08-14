@@ -1,0 +1,259 @@
+'use client'
+
+import * as React from 'react'
+import { NotebookPen, Pin, PinOff } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { Card, CardHeader, CardBody, CardFooter } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Field, Select, Textarea, Checkbox } from '@/components/ui/input'
+import { StatusChip } from '@/components/ui/status-chip'
+import { ViewToggle } from '@/components/ui/tabs'
+import { EmptyState } from '@/components/ui/empty-state'
+import { useToast } from '@/components/ui/toast'
+import type { Member } from '@/lib/types'
+import { NOW } from '@/lib/seed'
+import { clock, daysAgo, fullDate } from '@/lib/format'
+import { getStaff } from '@/lib/data/staff'
+import { NOTE_META, notesFor, type MemberNote, type NoteKind } from './profile-data'
+
+/**
+ * Notes tab. A pinned note is an operational instruction, not a comment — it is
+ * what the kiosk surfaces to the front desk in Batch 4, so pinning is the one
+ * decision this screen makes explicit.
+ */
+
+const KIND_ORDER: NoteKind[] = ['note', 'call', 'injury', 'goal', 'complaint']
+
+export function NotesTab({ member }: { member: Member }) {
+  const { toast } = useToast()
+  const seeded = React.useMemo(() => notesFor(member), [member])
+  const [notes, setNotes] = React.useState<MemberNote[]>(seeded)
+  const [kindFilter, setKindFilter] = React.useState<NoteKind | 'all'>('all')
+
+  React.useEffect(() => setNotes(seeded), [seeded])
+
+  // Composer
+  const [body, setBody] = React.useState('')
+  const [kind, setKind] = React.useState<NoteKind>('note')
+  const [pinned, setPinned] = React.useState(false)
+  const [error, setError] = React.useState<string | undefined>()
+
+  const counts = React.useMemo(() => {
+    const map = new Map<NoteKind, number>()
+    for (const n of notes) map.set(n.kind, (map.get(n.kind) ?? 0) + 1)
+    return map
+  }, [notes])
+
+  const visible = kindFilter === 'all' ? notes : notes.filter((n) => n.kind === kindFilter)
+  const pinnedCount = notes.filter((n) => n.pinned).length
+
+  function submit() {
+    const text = body.trim()
+    if (text.length < 4) {
+      setError('A note needs at least a few words — it is read by someone else at the desk.')
+      return
+    }
+    setError(undefined)
+    const note: MemberNote = {
+      id: `${member.id}-n-local-${Date.now()}`,
+      kind,
+      body: text,
+      authorId: 'staff-manager',
+      timestamp: new Date().toISOString(),
+      pinned,
+    }
+    setNotes((prev) => sortNotes([note, ...prev]))
+    setBody('')
+    setPinned(false)
+    toast({
+      tone: pinned ? 'warn' : 'good',
+      title: pinned ? 'Note added and pinned' : 'Note added',
+      detail: pinned
+        ? 'It will be shown at check-in until someone unpins it.'
+        : `${NOTE_META[kind].label} on ${member.name}`,
+      action: {
+        label: 'Undo',
+        onClick: () => setNotes((prev) => prev.filter((n) => n.id !== note.id)),
+      },
+    })
+  }
+
+  function togglePin(id: string) {
+    let nextPinned = false
+    setNotes((prev) =>
+      sortNotes(
+        prev.map((n) => {
+          if (n.id !== id) return n
+          nextPinned = !n.pinned
+          return { ...n, pinned: nextPinned }
+        }),
+      ),
+    )
+    toast({
+      tone: nextPinned ? 'warn' : 'neutral',
+      title: nextPinned ? 'Pinned to check-in' : 'Unpinned',
+      detail: nextPinned
+        ? 'Front desk sees this before the door opens.'
+        : 'It stays in the history but no longer interrupts check-in.',
+    })
+  }
+
+  return (
+    <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="flex min-w-0 flex-col gap-4">
+        <ViewToggle
+          value={kindFilter}
+          onChange={(id) => setKindFilter(id as NoteKind | 'all')}
+          items={[
+            { id: 'all', label: `All ${notes.length}` },
+            ...KIND_ORDER.filter((k) => (counts.get(k) ?? 0) > 0).map((k) => ({
+              id: k,
+              label: `${NOTE_META[k].label} ${counts.get(k)}`,
+            })),
+          ]}
+          className="self-start"
+        />
+
+        {visible.length === 0 ? (
+          <EmptyState
+            icon={NotebookPen}
+            title="Nothing recorded yet"
+            description={
+              kindFilter === 'all'
+                ? 'Notes written here travel with the member — the desk, the trainer and the retention queue all read them.'
+                : `No ${NOTE_META[kindFilter as NoteKind].label.toLowerCase()} entries on this member.`
+            }
+            action={
+              kindFilter === 'all' ? undefined : { label: 'Show all notes', onClick: () => setKindFilter('all') }
+            }
+          />
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {visible.map((note) => {
+              const meta = NOTE_META[note.kind]
+              const author = getStaff(note.authorId)
+              return (
+                <li
+                  key={note.id}
+                  className={cn(
+                    'rounded-md border bg-card p-3',
+                    note.pinned ? 'border-danger-border' : 'border-border',
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                      <StatusChip tone={meta.tone} label={meta.label} />
+                      {note.pinned ? <StatusChip tone="warn" label="Shown at check-in" /> : null}
+                      <span className="text-micro text-muted-foreground">
+                        {author?.name ?? 'System'} · {fullDate(note.timestamp)} at{' '}
+                        {clock(note.timestamp)}
+                      </span>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={note.pinned ? 'Unpin note' : 'Pin note to check-in'}
+                      onClick={() => togglePin(note.id)}
+                    >
+                      {note.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
+                    </Button>
+                  </div>
+                  <p className="mt-1.5 text-sm leading-relaxed text-foreground">{note.body}</p>
+                  <p className="mt-1 text-micro text-muted-foreground">
+                    {daysAgo(note.timestamp, NOW)}
+                  </p>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+
+      <div className="flex min-w-0 flex-col gap-4">
+        <Card>
+          <CardHeader title="Add a note" description="Visible to every staff member on this account." />
+          <CardBody className="space-y-3">
+            <Field label="Type" htmlFor="note-kind">
+              <Select
+                id="note-kind"
+                value={kind}
+                onChange={(e) => setKind(e.currentTarget.value as NoteKind)}
+              >
+                {KIND_ORDER.map((k) => (
+                  <option key={k} value={k}>
+                    {NOTE_META[k].label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field
+              label="Note"
+              htmlFor="note-body"
+              error={error}
+              help="Write what the next person needs to do, not what happened."
+            >
+              <Textarea
+                id="note-body"
+                value={body}
+                onChange={(e) => setBody(e.currentTarget.value)}
+                placeholder="e.g. Cleared for spin only until the physio signs off on 20 Sep."
+                aria-invalid={error ? true : undefined}
+              />
+            </Field>
+            <label className="flex items-start gap-2 rounded-md border border-border bg-subtle p-2.5">
+              <Checkbox
+                className="mt-0.5"
+                checked={pinned}
+                onChange={(e) => setPinned(e.currentTarget.checked)}
+              />
+              <span className="min-w-0 text-sm leading-relaxed text-foreground">
+                Show at check-in
+                <span className="block text-micro text-muted-foreground">
+                  Interrupts the kiosk with this note before the door releases. Use it for injuries
+                  and access holds only.
+                </span>
+              </span>
+            </label>
+          </CardBody>
+          <CardFooter>
+            <span>
+              {pinnedCount === 0
+                ? 'No notes currently interrupt check-in'
+                : `${pinnedCount} note${pinnedCount > 1 ? 's' : ''} shown at check-in`}
+            </span>
+            <Button variant="primary" size="sm" onClick={submit}>
+              Save note
+            </Button>
+          </CardFooter>
+        </Card>
+
+        <Card>
+          <CardHeader title="How notes are used" />
+          <CardBody>
+            <ul className="flex flex-col gap-2 text-sm leading-relaxed text-muted-foreground">
+              <li>
+                <span className="font-medium text-foreground">Injury</span> — pinned by default and
+                read out by the kiosk script at check-in.
+              </li>
+              <li>
+                <span className="font-medium text-foreground">Call</span> — counted as an
+                intervention on the retention effectiveness report.
+              </li>
+              <li>
+                <span className="font-medium text-foreground">Complaint</span> — surfaces on the
+                owner dashboard queue until it is resolved.
+              </li>
+            </ul>
+          </CardBody>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+function sortNotes(list: MemberNote[]): MemberNote[] {
+  return [...list].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+    return a.timestamp < b.timestamp ? 1 : -1
+  })
+}

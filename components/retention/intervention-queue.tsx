@@ -1,0 +1,341 @@
+'use client'
+
+import * as React from 'react'
+import Link from 'next/link'
+import { Clock, UserPlus, Check } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { Card, CardHeader, CardBody, CardFooter } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Modal } from '@/components/ui/modal'
+import { EmptyState } from '@/components/ui/empty-state'
+import { RiskScore, StatusChip } from '@/components/ui/status-chip'
+import { ViewToggle } from '@/components/ui/tabs'
+import { TableWrap, Table, Thead, Tbody, Th, Tr, Td, CellStack } from '@/components/ui/table'
+import { useToast } from '@/components/ui/toast'
+import { compactMoney, money, num } from '@/lib/format'
+import { staffById } from '@/lib/data/staff'
+import {
+  PLAYS,
+  SNOOZE_OPTIONS,
+  assignableStaff,
+  interventionQueue,
+  queueValue,
+  snoozeDate,
+  type InterventionItem,
+} from './retention-data'
+
+type Filter = 'all' | 'mine' | 'unassigned'
+
+interface QueueState {
+  assigneeId: string | null
+  snoozedUntil: string | null
+  done: boolean
+}
+
+/** Front desk is "Marco Silveira" in the role context — st-4 in the staff set. */
+const CURRENT_STAFF_ID = assignableStaff[0]?.id ?? null
+
+/**
+ * The intervention queue. Ordered by risk × value, because ordering by risk
+ * alone sends staff after members who were never worth the hour. Every row
+ * carries the play to run, so the queue is executable rather than informational.
+ */
+export function InterventionQueue({ className }: { className?: string }) {
+  const { toast } = useToast()
+  const [state, setState] = React.useState<Record<string, QueueState>>({})
+  const [filter, setFilter] = React.useState<Filter>('all')
+  const [assigning, setAssigning] = React.useState<InterventionItem | null>(null)
+  const [snoozing, setSnoozing] = React.useState<InterventionItem | null>(null)
+
+  const resolved = React.useCallback(
+    (item: InterventionItem): QueueState =>
+      state[item.id] ?? {
+        assigneeId: item.assigneeId,
+        snoozedUntil: item.snoozedUntil,
+        done: false,
+      },
+    [state],
+  )
+
+  const update = (item: InterventionItem, next: Partial<QueueState>) =>
+    setState((prev) => ({
+      ...prev,
+      [item.id]: { ...resolved(item), ...next },
+    }))
+
+  const active = React.useMemo(
+    () =>
+      interventionQueue.filter((item) => {
+        const s = resolved(item)
+        if (s.done || s.snoozedUntil) return false
+        if (filter === 'mine') return s.assigneeId === CURRENT_STAFF_ID
+        if (filter === 'unassigned') return s.assigneeId === null
+        return true
+      }),
+    [filter, resolved],
+  )
+
+  const openCount = interventionQueue.filter((i) => {
+    const s = resolved(i)
+    return !s.done && !s.snoozedUntil
+  }).length
+  const snoozedCount = interventionQueue.filter((i) => resolved(i).snoozedUntil).length
+  const doneCount = interventionQueue.filter((i) => resolved(i).done).length
+  const mineCount = interventionQueue.filter((i) => {
+    const s = resolved(i)
+    return !s.done && !s.snoozedUntil && s.assigneeId === CURRENT_STAFF_ID
+  }).length
+  const unassignedCount = interventionQueue.filter((i) => {
+    const s = resolved(i)
+    return !s.done && !s.snoozedUntil && s.assigneeId === null
+  }).length
+
+  const assign = (item: InterventionItem, staffId: string) => {
+    const previous = resolved(item).assigneeId
+    update(item, { assigneeId: staffId })
+    setAssigning(null)
+    toast({
+      tone: 'info',
+      title: `Assigned to ${staffById.get(staffId)?.name ?? 'staff'}`,
+      detail: `${item.member.name} · ${PLAYS[item.play].label}`,
+      action: { label: 'Undo', onClick: () => update(item, { assigneeId: previous }) },
+    })
+  }
+
+  const snooze = (item: InterventionItem, days: number) => {
+    update(item, { snoozedUntil: snoozeDate(days) })
+    setSnoozing(null)
+    toast({
+      tone: 'neutral',
+      title: `Snoozed ${days} day${days === 1 ? '' : 's'}`,
+      detail: `${item.member.name} returns to the queue automatically.`,
+      action: { label: 'Undo', onClick: () => update(item, { snoozedUntil: null }) },
+    })
+  }
+
+  const complete = (item: InterventionItem) => {
+    update(item, { done: true })
+    toast({
+      tone: 'good',
+      title: 'Logged as contacted',
+      detail: `${item.member.name} · ${PLAYS[item.play].label}. Outcome is measured at 60 days.`,
+      action: { label: 'Undo', onClick: () => update(item, { done: false }) },
+    })
+  }
+
+  return (
+    <Card className={className}>
+      <CardHeader
+        title="Intervention queue"
+        description={'Ordered by risk \u00d7 monthly value. Work top-down.'}
+        actions={
+          <ViewToggle
+            value={filter}
+            onChange={(v) => setFilter(v as Filter)}
+            items={[
+              { id: 'all', label: `All ${openCount}` },
+              { id: 'mine', label: `Mine ${mineCount}` },
+              { id: 'unassigned', label: `Open ${unassignedCount}` },
+            ]}
+          />
+        }
+      />
+
+      {active.length === 0 ? (
+        <CardBody>
+          <EmptyState
+            title={
+              filter === 'mine'
+                ? 'Nothing assigned to you'
+                : filter === 'unassigned'
+                  ? 'Every item is assigned'
+                  : 'Queue is clear'
+            }
+            description={
+              filter === 'all'
+                ? 'No member above 45 is waiting on contact. Snoozed items return automatically.'
+                : 'Switch to All to see the rest of the queue.'
+            }
+          />
+        </CardBody>
+      ) : (
+        <TableWrap className="max-h-[32rem]">
+          <Table>
+            <Thead>
+              <tr>
+                <Th width={220}>Member</Th>
+                <Th align="right" width={72}>
+                  Risk
+                </Th>
+                <Th align="right" width={92}>
+                  Value/mo
+                </Th>
+                <Th width={150}>Play</Th>
+                <Th width={140}>Owner</Th>
+                <Th width={110} className="hidden xl:table-cell">
+                  Last contact
+                </Th>
+                <Th align="right" width={190}>
+                  Action
+                </Th>
+              </tr>
+            </Thead>
+            <Tbody>
+              {active.map((item) => {
+                const s = resolved(item)
+                const owner = s.assigneeId ? staffById.get(s.assigneeId) : null
+                const play = PLAYS[item.play]
+                return (
+                  <Tr key={item.id}>
+                    <Td>
+                      <CellStack
+                        primary={
+                          <Link
+                            href={`/members/${item.member.id}`}
+                            className="underline-offset-2 hover:underline"
+                          >
+                            {item.member.name}
+                          </Link>
+                        }
+                        secondary={item.member.risk.factors[0]?.detail ?? 'No dominant factor'}
+                      />
+                    </Td>
+                    <Td align="right">
+                      <RiskScore score={item.member.risk.score} />
+                    </Td>
+                    <Td align="right" className="tnum">
+                      {money(item.member.metrics.monthlyValue)}
+                    </Td>
+                    <Td>
+                      <span title={play.script} className="text-sm text-foreground">
+                        {play.label}
+                      </span>
+                    </Td>
+                    <Td>
+                      {owner ? (
+                        <span className="text-sm text-foreground">{owner.name}</span>
+                      ) : (
+                        <StatusChip tone="warn" label="Unassigned" />
+                      )}
+                    </Td>
+                    <Td muted className="tnum hidden xl:table-cell">
+                      {item.lastContactDays === null ? 'Never' : `${item.lastContactDays}d ago`}
+                    </Td>
+                    <Td align="right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button size="xs" variant="ghost" onClick={() => setAssigning(item)}>
+                          <UserPlus className="size-3" />
+                          Assign
+                        </Button>
+                        <Button size="xs" variant="ghost" onClick={() => setSnoozing(item)}>
+                          <Clock className="size-3" />
+                          Snooze
+                        </Button>
+                        <Button size="xs" variant="secondary" onClick={() => complete(item)}>
+                          <Check className="size-3" />
+                          Done
+                        </Button>
+                      </div>
+                    </Td>
+                  </Tr>
+                )
+              })}
+            </Tbody>
+          </Table>
+        </TableWrap>
+      )}
+
+      <CardFooter>
+        <span className="tnum">
+          {num(active.length)} in queue · {compactMoney(queueValue(active))}/mo at stake
+        </span>
+        <span className="tnum">
+          {num(doneCount)} contacted · {num(snoozedCount)} snoozed
+        </span>
+      </CardFooter>
+
+      <Modal
+        open={assigning !== null}
+        onClose={() => setAssigning(null)}
+        title="Assign intervention"
+        description={
+          assigning
+            ? `${assigning.member.name} · ${PLAYS[assigning.play].label} · risk ${assigning.member.risk.score}`
+            : undefined
+        }
+        size="sm"
+      >
+        {assigning ? (
+          <div className="space-y-3">
+            <p className="rounded-md border border-border bg-muted px-3 py-2 text-sm leading-relaxed text-muted-foreground">
+              {PLAYS[assigning.play].script}
+            </p>
+            <ul className="flex flex-col gap-1">
+              {assignableStaff.map((person) => (
+                <li key={person.id}>
+                  <button
+                    type="button"
+                    onClick={() => assign(assigning, person.id)}
+                    className={cn(
+                      'flex w-full items-center justify-between gap-3 rounded-sm border border-border bg-surface px-2.5 py-2 text-left',
+                      'transition-colors duration-150 hover:border-border-strong hover:bg-muted',
+                      'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
+                    )}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium text-foreground">
+                        {person.name}
+                      </span>
+                      <span className="block truncate text-micro text-muted-foreground capitalize">
+                        {person.role.replace('-', ' ')}
+                      </span>
+                    </span>
+                    {resolved(assigning).assigneeId === person.id ? (
+                      <StatusChip tone="info" label="Current" />
+                    ) : null}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={snoozing !== null}
+        onClose={() => setSnoozing(null)}
+        title="Snooze intervention"
+        description={
+          snoozing ? `${snoozing.member.name} returns to the queue automatically.` : undefined
+        }
+        size="sm"
+        footer={
+          <Button variant="secondary" onClick={() => setSnoozing(null)}>
+            Cancel
+          </Button>
+        }
+      >
+        {snoozing ? (
+          <div className="space-y-3">
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              Snoozing hides the row — it does not lower the risk score. If the member keeps
+              declining they will re-enter above their current position.
+            </p>
+            <div className="flex gap-2">
+              {SNOOZE_OPTIONS.map((option) => (
+                <Button
+                  key={option.days}
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => snooze(snoozing, option.days)}
+                >
+                  {option.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+    </Card>
+  )
+}
