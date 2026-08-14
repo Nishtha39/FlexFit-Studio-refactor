@@ -89,6 +89,40 @@ jobs:
       - name: Build
         run: pnpm exec next build
 
+      # Without these, wrangler fails in about two seconds with an auth error
+      # that does not say which secret is missing or where to put it. Checking
+      # first turns "the run failed" into an instruction.
+      - name: Check the Cloudflare credentials are configured
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=""
+          [ -z "$TOKEN" ]   && missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -z "$ACCOUNT" ] && missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error title=Deploy not configured::Missing repository secret(s):$missing"
+            {
+              echo "### Not deployed — credentials missing"
+              echo ""
+              echo "The build succeeded. The deploy could not run because these"
+              echo "repository secrets are not set:"
+              echo ""
+              for s in $missing; do echo "- \`$s\`"; done
+              echo ""
+              echo "Add them under **Settings → Secrets and variables → Actions**:"
+              echo ""
+              echo "| Secret | Where it comes from |"
+              echo "| --- | --- |"
+              echo "| \`CLOUDFLARE_API_TOKEN\` | Cloudflare dashboard → My Profile → API Tokens → Create Token → **Edit Cloudflare Workers** template |"
+              echo "| \`CLOUDFLARE_ACCOUNT_ID\` | Cloudflare dashboard → Workers & Pages → Account ID in the right-hand pane |"
+              echo ""
+              echo "Then re-run this workflow. Nothing else needs changing."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Both secrets are present."
+
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
