@@ -1,0 +1,14 @@
+overrides:
+  hono: 4.12.25
+
+# pnpm v11 ignores package.json's `pnpm` field, so these live here or the install
+# silently drops them. esbuild and workerd MUST be allowed to run their install
+# scripts — both fetch a platform binary in postinstall, and the Cloudflare build
+# fails without them. msw stays off (dev-only mock worker, not used at build time).
+allowBuilds:
+  esbuild: true
+  workerd: true
+  msw: false
+
+# `pnpm dev`/`pnpm build` hard-fail on the ignored-build record otherwise.
+verifyDepsBeforeRun: false

@@ -1,15 +1,31 @@
-# dependencies
-node_modules
+# v0 sandbox internal files
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+.snowflake/
+.v0-trash/
+.vercel/
 
-# next
-.next/
-out/
-next-env.d.ts
-tsconfig.tsbuildinfo
-
-# env
+# Environment variables
 .env
 .env*.local
 
-# os
+# Common ignores
+node_modules
+.next/
 .DS_Store
+
+# `next build` with output:'export' writes the whole static site here. It is
+# build output — regenerate it, never commit it.
+out/
+next-env.d.ts
+
+# Cloudflare (opennextjs-cloudflare build output + local wrangler state)
+.open-next/
+.wrangler/
+tsconfig.tsbuildinfo
+
+# Local working changelog. Deliberately unpublished: it records the Cloudflare
+# account id and the account's login email, which the repository has no reason
+# to carry. README.md is the published account of the project.
+HISTORY.md

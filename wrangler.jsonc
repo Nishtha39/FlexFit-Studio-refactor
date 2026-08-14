@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // The worker name IS the hostname: <name>.<account subdomain>.workers.dev.
+  "name": "flexfit-studio",
+  // Must not exceed the date the installed workerd supports (workerd 1.20260811.1).
+  "compatibility_date": "2026-08-11",
+
+  // The Worker serves the tRPC API only. Static assets are matched by the
+  // runtime BEFORE the Worker runs, so a page load still costs no Worker CPU —
+  // which is what fixed the 503s an SSR deploy produced under Next's link
+  // prefetching. `next build` with `output: 'export'` writes the pages to out/.
+  "main": "worker/index.ts",
+
+  "assets": {
+    "directory": "out",
+    // Required for the Worker to reach the assets itself, which it does for the
+    // client-routed detail pages and for 404.html.
+    "binding": "ASSETS",
+    // The export writes /dashboard.html, not /dashboard/index.html, so requests
+    // for /dashboard must resolve to the sibling .html file.
+    "html_handling": "auto-trailing-slash",
+    // "none" so an unmatched path falls through to the Worker. With "404-page"
+    // the asset server would answer /api/trpc/* with the 404 page and the API
+    // would never be reachable.
+    "not_found_handling": "none"
+  },
+
+  "d1_databases": [
+    {
+      // Binding name must stay "DB" — server/db/client.ts reads env.DB.
+      "binding": "DB",
+      "database_name": "flexfit-studio",
+      "database_id": "f444ada5-392c-4373-8969-0025b638c576"
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}
