@@ -130,14 +130,42 @@ jobs:
       # Cloudflare directly does, and none of it reveals the token.
       - name: Are the credentials actually accepted?
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RAW_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RAW_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
+          # GitHub stores a secret exactly as pasted, INCLUDING a trailing
+          # newline. Neither value can legally contain whitespace, so stripping
+          # it is safe — and without it a newline inside the account id makes
+          # even curl refuse the URL as malformed, while wrangler just reports a
+          # generic auth failure. Every later step re-strips for the same reason.
+          token=$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')
+          account=$(printf '%s' "$RAW_ACCOUNT" | tr -d '[:space:]')
+
+          if [ "$token" != "$RAW_TOKEN" ] || [ "$account" != "$RAW_ACCOUNT" ]; then
+            echo "::warning title=Whitespace in a secret::A stored secret had surrounding whitespace or a newline. It has been stripped for this run, but re-pasting the value without the trailing newline is tidier."
+          fi
+
+          # A Cloudflare account id is 32 hex characters. Saying so beats
+          # letting the request fail for an unrelated-looking reason.
+          if ! printf '%s' "$account" | grep -Eq '^[0-9a-f]{32}$'; then
+            echo "::error title=CLOUDFLARE_ACCOUNT_ID is not an account id::Expected 32 hexadecimal characters, got ${#account}. Copy it from the Cloudflare dashboard → Workers & Pages → Account ID."
+            exit 1
+          fi
+
+          # Explicit exit codes: with bash -e a failing command substitution
+          # would abort the step before it could explain itself.
+          set +e
           code=$(curl -sS -o /tmp/verify.json -w '%{http_code}' \
             https://api.cloudflare.com/client/v4/user/tokens/verify \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+            -H "Authorization: Bearer $token")
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            echo "::error title=Could not reach Cloudflare::curl exited $rc."
+            exit 1
+          fi
           if [ "$code" != "200" ]; then
-            why=$(jq -r '[.errors[]? | "\(.code): \(.message)"] | join("; ")' /tmp/verify.json)
+            why=$(jq -r '[.errors[]? | "\(.code): \(.message)"] | join("; ")' /tmp/verify.json 2>/dev/null)
             echo "::error title=Cloudflare rejected the token::HTTP $code — ${why:-no detail}. Re-copy CLOUDFLARE_API_TOKEN with the dashboard's copy button (the displayed value wraps onto two lines) and check it has not expired."
             exit 1
           fi
@@ -146,21 +174,28 @@ jobs:
           # Warning, not a gate: a token can be allowed to deploy a Worker while
           # not being allowed to read account settings, so a failure here does
           # not by itself mean the deploy will fail.
+          set +e
           acct=$(curl -sS -o /tmp/acct.json -w '%{http_code}' \
-            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID" \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
-          if [ "$acct" != "200" ]; then
-            why=$(jq -r '[.errors[]? | "\(.code): \(.message)"] | join("; ")' /tmp/acct.json)
-            echo "::warning title=Account not readable with this token::HTTP $acct — ${why:-no detail}. If the deploy fails next, CLOUDFLARE_ACCOUNT_ID is the thing to check."
+            "https://api.cloudflare.com/client/v4/accounts/$account" \
+            -H "Authorization: Bearer $token")
+          arc=$?
+          set -e
+          if [ $arc -ne 0 ] || [ "$acct" != "200" ]; then
+            why=$(jq -r '[.errors[]? | "\(.code): \(.message)"] | join("; ")' /tmp/acct.json 2>/dev/null)
+            echo "::warning title=Account not readable with this token::HTTP $acct (curl $arc) — ${why:-no detail}. If the deploy fails next, CLOUDFLARE_ACCOUNT_ID is the thing to check."
           else
             echo "Account visible: $(jq -r '.result.name' /tmp/acct.json)"
           fi
 
       - name: Deploy
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RAW_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RAW_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
+          CLOUDFLARE_API_TOKEN=$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')
+          CLOUDFLARE_ACCOUNT_ID=$(printf '%s' "$RAW_ACCOUNT" | tr -d '[:space:]')
+          export CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
+
           set -o pipefail
           if ! pnpm exec wrangler deploy 2>&1 | tee /tmp/deploy.log; then
             # Surface wrangler's own words as annotations, so the reason is on
