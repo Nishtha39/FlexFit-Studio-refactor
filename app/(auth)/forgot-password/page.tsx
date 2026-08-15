@@ -3,7 +3,7 @@ import { AuthShell } from '@/components/v2/auth/auth-shell'
 import { ForgotPasswordForm } from '@/components/v2/auth/forgot-password-form'
 
 export const metadata: Metadata = {
-  title: 'Reset your password | FlexFit Studio',
+  title: 'Reset your password',
   description:
     'Request a secure link to reset the password on your FlexFit Studio staff account.',
 }
