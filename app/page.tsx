@@ -5,7 +5,26 @@ import { Results } from '@/components/v2/landing/results'
 import { SiteFooter } from '@/components/v2/landing/site-footer'
 import { SiteHeader } from '@/components/v2/landing/site-header'
 import { Workflow } from '@/components/v2/landing/workflow'
+import type { Metadata } from 'next'
 import { V2Shell } from '@/components/v2/v2-shell'
+
+/**
+ * The root is the public face of the product, so it carries the marketing
+ * title rather than inheriting the back-office one from the root layout
+ * ("Gym Business Management" describes the workspace behind the login, not the
+ * page a prospect lands on).
+ */
+export const metadata: Metadata = {
+  title: 'FlexFit Studio — Gym management, quietly handled',
+  description:
+    'Memberships, class schedules, check-ins and billing in one calm workspace for gym teams.',
+  openGraph: {
+    title: 'FlexFit Studio — Gym management, quietly handled',
+    description:
+      'Memberships, classes, check-ins and billing in one calm workspace for gym teams.',
+    type: 'website',
+  },
+}
 
 /**
  * Marketing home page.
