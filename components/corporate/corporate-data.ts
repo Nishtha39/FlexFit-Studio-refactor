@@ -75,9 +75,16 @@ export function poolStatus(company: Company): PoolStatus {
   }
 }
 
-export const pools: PoolStatus[] = companies
-  .map(poolStatus)
-  .sort((a, b) => b.utilization - a.utilization)
+export let pools: PoolStatus[] = buildPools()
+
+function buildPools(): PoolStatus[] {
+  return companies.map(poolStatus).sort((a, b) => b.utilization - a.utilization)
+}
+
+/** Recompute pool health after a top-up or a membership change. */
+export function rebuild(): void {
+  pools = buildPools()
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Burn history — 12 weeks of consumption per pool                           */

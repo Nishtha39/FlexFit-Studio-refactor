@@ -8,8 +8,21 @@ import { RequireScreen } from '@/components/shell/app-shell'
 import { Card, CardHeader, CardFooter } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { NullResultState } from '@/components/ui/empty-state'
-import { Table, TableWrap, Tbody, Td, Th, Thead, Tr } from '@/components/ui/table'
-import { useToast } from '@/components/ui/toast'
+import {
+  SerialTd,
+  SerialTh,
+  Table,
+  TableWrap,
+  Tbody,
+  Td,
+  Th,
+  Thead,
+  Tr,
+} from '@/components/ui/table'
+import { ComposeEmailDialog } from '@/components/comms/compose-email-dialog'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
+import { datedFilename, downloadCsv } from '@/lib/export'
 import { cn } from '@/lib/utils'
 import { fullDate } from '@/lib/format'
 import { NOW } from '@/lib/seed'
@@ -30,10 +43,34 @@ const TONE_CLASS: Record<CellTone, string> = {
  * caveat is rendered as a null result, not hidden in a footnote.
  */
 export function ReportView({ slug }: { slug: string }) {
-  const { toast } = useToast()
+  const { connection } = useStudio()
+  const version = useDataVersion()
+  const [emailOpen, setEmailOpen] = React.useState(false)
   const report = getReport(slug)
-  const result = React.useMemo(() => report?.run(), [report])
+  const result = React.useMemo(() => report?.run(), [report, version])
+  // Recipients are recomputed on hydrate, so a manager who left stops receiving
+  // reports without anybody remembering to take them off a list.
+  const recipient = React.useMemo(() => reportRecipients[0] ?? null, [version])
   if (!report || !result) return null
+
+  /**
+   * The rows as rendered, in the order rendered. A report is a question with an
+   * answer attached, so the file carries the takeaway and the caveat as header
+   * lines — a spreadsheet of numbers with the honest caveat stripped off is how
+   * a null result gets quoted as a finding.
+   */
+  const exportCsv = () =>
+    downloadCsv(
+      datedFilename(report.slug),
+      result.rows,
+      [
+        { header: 'S.no', value: (_r, i) => i + 1 },
+        ...result.columns.map((c, i) => ({
+          header: c.label,
+          value: (r: (typeof result.rows)[number]) => r.cells[i] ?? '',
+        })),
+      ],
+    )
 
   return (
     <RequireScreen screen="reports">
@@ -55,33 +92,22 @@ export function ReportView({ slug }: { slug: string }) {
         }
         actions={
           <>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() =>
-                toast({
-                  tone: 'neutral',
-                  title: 'CSV queued',
-                  detail: `${report.title} — ${result.rows.length} rows. Download starts in a moment.`,
-                })
-              }
-            >
+            <Button variant="secondary" size="sm" onClick={exportCsv}>
               <Download />
               CSV
             </Button>
+            {/* Not "Schedule": nothing in this app runs on a timer, and a button
+                that promises a 7am Monday email would be promising something no
+                code performs. Sending it now is the part that is real. */}
             <Button
               variant="secondary"
               size="sm"
-              onClick={() =>
-                toast({
-                  tone: 'good',
-                  title: 'Scheduled weekly',
-                  detail: `Emails ${reportRecipients.map((r) => r.firstName).join(' and ')} every Monday at 7am.`,
-                })
-              }
+              disabled={!recipient || connection !== 'live'}
+              title={recipient ? undefined : 'No active owner or manager to send this to.'}
+              onClick={() => setEmailOpen(true)}
             >
               <Mail />
-              Schedule
+              Email this
             </Button>
           </>
         }
@@ -111,6 +137,7 @@ export function ReportView({ slug }: { slug: string }) {
             <Table>
               <Thead>
                 <tr>
+                  <SerialTh />
                   {result.columns.map((col) => (
                     <Th key={col.key} align={col.align ?? 'left'}>
                       {col.label}
@@ -121,6 +148,7 @@ export function ReportView({ slug }: { slug: string }) {
               <Tbody>
                 {result.rows.map((row, i) => (
                   <Tr key={i}>
+                    <SerialTd index={i} />
                     {row.cells.map((cell, j) => (
                       <Td
                         key={j}
@@ -146,6 +174,37 @@ export function ReportView({ slug }: { slug: string }) {
           </CardFooter>
         </Card>
       </PageBody>
+
+      {recipient ? (
+        <ComposeEmailDialog
+          open={emailOpen}
+          onClose={() => setEmailOpen(false)}
+          to={recipient.email}
+          toName={recipient.name}
+          title={`Email ${report.title}`}
+          send={({ subject, body }) =>
+            api.comms.emailStaff.mutate({ staffId: recipient.id, subject, body })
+          }
+          templates={[
+            {
+              label: 'Summary',
+              subject: `${report.title} — ${fullDate(NOW)}`,
+              body: [
+                `Hi ${recipient.firstName},`,
+                '',
+                report.question,
+                '',
+                result.takeaway,
+                ...(result.caveat ? ['', `Caveat: ${result.caveat}`] : []),
+                '',
+                `Covers ${report.window}. ${result.rows.length} rows — the full table is on the Reports screen, and the CSV button beside this one downloads it.`,
+                '',
+                'FlexFit Studio',
+              ].join('\n'),
+            },
+          ]}
+        />
+      ) : null}
     </RequireScreen>
   )
 }

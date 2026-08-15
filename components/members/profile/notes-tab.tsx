@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { NotebookPen, Pin, PinOff } from 'lucide-react'
+import { NotebookPen, Pin, PinOff, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Card, CardHeader, CardBody, CardFooter } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -9,28 +9,34 @@ import { Field, Select, Textarea, Checkbox } from '@/components/ui/input'
 import { StatusChip } from '@/components/ui/status-chip'
 import { ViewToggle } from '@/components/ui/tabs'
 import { EmptyState } from '@/components/ui/empty-state'
-import { useToast } from '@/components/ui/toast'
-import type { Member } from '@/lib/types'
+import { ConfirmDialog } from '@/components/ui/modal'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
+import type { Member, MemberNote, NoteKind } from '@/lib/types'
 import { NOW } from '@/lib/seed'
 import { clock, daysAgo, fullDate } from '@/lib/format'
 import { getStaff } from '@/lib/data/staff'
-import { NOTE_META, notesFor, type MemberNote, type NoteKind } from './profile-data'
+import { NOTE_META, notesFor } from '@/lib/data/notes'
 
 /**
  * Notes tab. A pinned note is an operational instruction, not a comment — it is
- * what the kiosk surfaces to the front desk in Batch 4, so pinning is the one
- * decision this screen makes explicit.
+ * what the kiosk surfaces to the front desk, so pinning is the one decision this
+ * screen makes explicit.
+ *
+ * Notes used to live in React state seeded from a generator, which meant the
+ * injury warning a trainer wrote survived exactly as long as the tab stayed
+ * open — and the kiosk, reading its own copy, never saw it at all. They are rows
+ * now, and this screen reads them back from the database like everything else.
  */
 
 const KIND_ORDER: NoteKind[] = ['note', 'call', 'injury', 'goal', 'complaint']
 
 export function NotesTab({ member }: { member: Member }) {
-  const { toast } = useToast()
-  const seeded = React.useMemo(() => notesFor(member), [member])
-  const [notes, setNotes] = React.useState<MemberNote[]>(seeded)
+  const { mutate, connection, busy } = useStudio()
+  const version = useDataVersion()
+  const notes = React.useMemo(() => notesFor(member.id), [member.id, version])
   const [kindFilter, setKindFilter] = React.useState<NoteKind | 'all'>('all')
-
-  React.useEffect(() => setNotes(seeded), [seeded])
+  const [confirmDelete, setConfirmDelete] = React.useState<MemberNote | null>(null)
 
   // Composer
   const [body, setBody] = React.useState('')
@@ -54,48 +60,56 @@ export function NotesTab({ member }: { member: Member }) {
       return
     }
     setError(undefined)
-    const note: MemberNote = {
-      id: `${member.id}-n-local-${Date.now()}`,
-      kind,
-      body: text,
-      authorId: 'staff-manager',
-      timestamp: new Date().toISOString(),
-      pinned,
-    }
-    setNotes((prev) => sortNotes([note, ...prev]))
-    setBody('')
-    setPinned(false)
-    toast({
-      tone: pinned ? 'warn' : 'good',
-      title: pinned ? 'Note added and pinned' : 'Note added',
-      detail: pinned
-        ? 'It will be shown at check-in until someone unpins it.'
-        : `${NOTE_META[kind].label} on ${member.name}`,
-      action: {
-        label: 'Undo',
-        onClick: () => setNotes((prev) => prev.filter((n) => n.id !== note.id)),
+    if (connection !== 'live') return
+    const wasPinned = pinned
+    void mutate(
+      () => api.crm.addMemberNote.mutate({ memberId: member.id, kind, body: text, pinned: wasPinned }),
+      {
+        success: (note) => ({
+          title: wasPinned ? 'Note added and pinned' : 'Note added',
+          detail: wasPinned
+            ? 'It will be shown at check-in until someone unpins it.'
+            : `${NOTE_META[kind].label} on ${member.name}`,
+          // Undo has to be a write now that the note is stored — removing it
+          // from a local list would leave the row behind for everyone else.
+          action: {
+            label: 'Undo',
+            onClick: () => {
+              void mutate(() => api.crm.deleteMemberNote.mutate({ id: note.id }), {
+                success: () => ({ title: 'Note removed' }),
+              })
+            },
+          },
+        }),
       },
+    ).then((note) => {
+      if (!note) return
+      setBody('')
+      setPinned(false)
     })
   }
 
-  function togglePin(id: string) {
-    let nextPinned = false
-    setNotes((prev) =>
-      sortNotes(
-        prev.map((n) => {
-          if (n.id !== id) return n
-          nextPinned = !n.pinned
-          return { ...n, pinned: nextPinned }
-        }),
-      ),
-    )
-    toast({
-      tone: nextPinned ? 'warn' : 'neutral',
-      title: nextPinned ? 'Pinned to check-in' : 'Unpinned',
-      detail: nextPinned
-        ? 'Front desk sees this before the door opens.'
-        : 'It stays in the history but no longer interrupts check-in.',
+  function togglePin(note: MemberNote) {
+    if (connection !== 'live') return
+    const next = !note.pinned
+    void mutate(() => api.crm.setNotePinned.mutate({ id: note.id, pinned: next }), {
+      success: () => ({
+        title: next ? 'Pinned to check-in' : 'Unpinned',
+        detail: next
+          ? 'Front desk sees this before the door opens.'
+          : 'It stays in the history but no longer interrupts check-in.',
+      }),
     })
+  }
+
+  function remove(note: MemberNote) {
+    if (connection !== 'live') return
+    void mutate(() => api.crm.deleteMemberNote.mutate({ id: note.id }), {
+      success: () => ({
+        title: 'Note deleted',
+        detail: `The ${NOTE_META[note.kind].label.toLowerCase()} entry is gone from ${member.name}'s record.`,
+      }),
+    }).then(() => setConfirmDelete(null))
   }
 
   return (
@@ -149,14 +163,26 @@ export function NotesTab({ member }: { member: Member }) {
                         {clock(note.timestamp)}
                       </span>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={note.pinned ? 'Unpin note' : 'Pin note to check-in'}
-                      onClick={() => togglePin(note.id)}
-                    >
-                      {note.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        disabled={connection !== 'live'}
+                        aria-label={note.pinned ? 'Unpin note' : 'Pin note to check-in'}
+                        onClick={() => togglePin(note)}
+                      >
+                        {note.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        disabled={connection !== 'live'}
+                        aria-label="Delete note"
+                        onClick={() => setConfirmDelete(note)}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
                   </div>
                   <p className="mt-1.5 text-sm leading-relaxed text-foreground">{note.body}</p>
                   <p className="mt-1 text-micro text-muted-foreground">
@@ -221,7 +247,12 @@ export function NotesTab({ member }: { member: Member }) {
                 ? 'No notes currently interrupt check-in'
                 : `${pinnedCount} note${pinnedCount > 1 ? 's' : ''} shown at check-in`}
             </span>
-            <Button variant="primary" size="sm" onClick={submit}>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={busy || connection !== 'live'}
+              onClick={submit}
+            >
               Save note
             </Button>
           </CardFooter>
@@ -247,13 +278,26 @@ export function NotesTab({ member }: { member: Member }) {
           </CardBody>
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={() => confirmDelete && remove(confirmDelete)}
+        title="Delete this note?"
+        description={confirmDelete ? `${NOTE_META[confirmDelete.kind].label} on ${member.name}` : ''}
+        consequenceTone="danger"
+        consequence={
+          confirmDelete?.pinned
+            ? 'This note currently interrupts check-in. Deleting it means the front desk stops being warned.'
+            : 'The note is removed from the member record for every staff member. This cannot be undone.'
+        }
+        confirmLabel="Delete note"
+        destructive
+      >
+        {confirmDelete ? (
+          <p className="text-sm leading-relaxed text-muted-foreground">“{confirmDelete.body}”</p>
+        ) : null}
+      </ConfirmDialog>
     </div>
   )
-}
-
-function sortNotes(list: MemberNote[]): MemberNote[] {
-  return [...list].sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
-    return a.timestamp < b.timestamp ? 1 : -1
-  })
 }

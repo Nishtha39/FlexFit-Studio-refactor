@@ -26,16 +26,25 @@ import { relations, sql } from 'drizzle-orm'
 import { index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core'
 import type {
   ClassType,
+  EquipmentCategory,
+  EquipmentStatus,
+  FaultSeverity,
+  FaultStatus,
   LeadSource,
   LeadStage,
   LocationId,
   MembershipStatus,
   NotificationKind,
   NotificationSeverity,
+  NoteKind,
   PaymentMethod,
   PaymentStatus,
   PlanInterval,
+  ReservationStatus,
+  ServiceKind,
   StaffRole,
+  WorkItemStatus,
+  WorkQueue,
 } from '@/lib/types'
 
 /**
@@ -164,6 +173,16 @@ export const members = sqliteTable(
     metricCancelRate: real('metric_cancel_rate').notNull(),
     metricFailedPayments: integer('metric_failed_payments').notNull(),
     metricLifetimeValue: integer('metric_lifetime_value').notNull(),
+    /**
+     * What the member paid before the ledger window opened.
+     *
+     * `payments` holds one billing cycle, not a member's history, so summing it
+     * is not their lifetime value — it is only the part of it this table can
+     * see. Lifetime value is therefore this base plus the ledger, and a payment
+     * adds exactly its own amount rather than triggering a partial replay that
+     * silently rewrites years of history. See migration 0004.
+     */
+    metricLifetimeBase: integer('metric_lifetime_base').notNull().default(0),
     metricMonthlyValue: integer('metric_monthly_value').notNull(),
   },
   (t) => [
@@ -360,6 +379,133 @@ export const notifications = sqliteTable(
 )
 
 // ---------------------------------------------------------------------------
+// Equipment
+// ---------------------------------------------------------------------------
+/**
+ * Four tables rather than one, because they have different lifetimes and answer
+ * different questions. `status` on the asset is the current headline; the fault
+ * log is who reported what and when; the service log is what it has cost to
+ * keep. Collapsing any of those into a column on the asset would throw away the
+ * history that the maintenance spend and the "third failure this quarter"
+ * judgement are made of.
+ *
+ * Nothing here is derived. Book value, next-service date, overdue days and
+ * utilisation are all computed in components/equipment/equipment-data.ts, for
+ * the same reason `member.risk` has no column: a stored copy goes stale the
+ * moment anything it depends on moves.
+ */
+export const equipment = sqliteTable(
+  'equipment',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    category: text('category').$type<EquipmentCategory>().notNull(),
+    make: text('make').notNull(),
+    model: text('model').notNull(),
+    /** Stencilled on the frame — what a trainer reads off the machine. */
+    assetTag: text('asset_tag').notNull(),
+    location: text('location')
+      .$type<LocationId>()
+      .notNull()
+      .references(() => locations.id),
+    zone: text('zone').notNull(),
+    /** Identical units on one register line: 8 treadmills = 1 row, quantity 8. */
+    quantity: integer('quantity').notNull().default(1),
+    status: text('status').$type<EquipmentStatus>().notNull(),
+    purchaseDate: text('purchase_date').notNull(),
+    /** INR per unit. */
+    unitCost: integer('unit_cost').notNull(),
+    usefulLifeMonths: integer('useful_life_months').notNull(),
+    serviceIntervalDays: integer('service_interval_days').notNull(),
+    lastServiceDate: text('last_service_date'),
+    bookable: integer('bookable', { mode: 'boolean' }).notNull().default(false),
+    slotMinutes: integer('slot_minutes').notNull().default(30),
+    notes: text('notes').notNull().default(''),
+  },
+  (t) => [
+    index('equipment_location_idx').on(t.location),
+    index('equipment_status_idx').on(t.status),
+    index('equipment_bookable_idx').on(t.bookable),
+  ],
+)
+
+export const equipmentFaults = sqliteTable(
+  'equipment_faults',
+  {
+    id: text('id').primaryKey(),
+    equipmentId: text('equipment_id')
+      .notNull()
+      .references(() => equipment.id, { onDelete: 'cascade' }),
+    /** Staff id OR member id — anyone on the floor can report a fault, so this
+     *  deliberately has no foreign key: it points into two different tables. */
+    reportedBy: text('reported_by').notNull(),
+    reporterName: text('reporter_name').notNull(),
+    reportedAt: text('reported_at').notNull(),
+    severity: text('severity').$type<FaultSeverity>().notNull(),
+    summary: text('summary').notNull(),
+    status: text('status').$type<FaultStatus>().notNull(),
+    resolvedAt: text('resolved_at'),
+    resolutionNote: text('resolution_note'),
+  },
+  (t) => [
+    index('equipment_faults_equipment_idx').on(t.equipmentId),
+    index('equipment_faults_status_idx').on(t.status),
+  ],
+)
+
+export const equipmentServices = sqliteTable(
+  'equipment_services',
+  {
+    id: text('id').primaryKey(),
+    equipmentId: text('equipment_id')
+      .notNull()
+      .references(() => equipment.id, { onDelete: 'cascade' }),
+    date: text('date').notNull(),
+    kind: text('kind').$type<ServiceKind>().notNull(),
+    vendor: text('vendor').notNull(),
+    /** INR. The `install` row carries the purchase cost, so lifetime spend on an
+     *  asset is a plain SUM over this table with no special case. */
+    cost: integer('cost').notNull(),
+    note: text('note').notNull().default(''),
+  },
+  (t) => [
+    index('equipment_services_equipment_idx').on(t.equipmentId),
+    index('equipment_services_date_idx').on(t.date),
+  ],
+)
+
+/**
+ * Member reservations of a bookable asset.
+ *
+ * Unlike `class_seats` this cannot be a composite primary key on
+ * (equipment, member): the same member may book the same sauna twice in a week,
+ * and two different members may hold the same asset at once when quantity > 1.
+ * The clash rule is an interval overlap counted against `quantity`, enforced in
+ * the router — see server/domain/equipment-rules.ts.
+ */
+export const equipmentReservations = sqliteTable(
+  'equipment_reservations',
+  {
+    id: text('id').primaryKey(),
+    equipmentId: text('equipment_id')
+      .notNull()
+      .references(() => equipment.id, { onDelete: 'cascade' }),
+    memberId: text('member_id')
+      .notNull()
+      .references(() => members.id, { onDelete: 'cascade' }),
+    date: text('date').notNull(),
+    startTime: text('start_time').notNull(),
+    durationMin: integer('duration_min').notNull(),
+    status: text('status').$type<ReservationStatus>().notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => [
+    index('equipment_res_equipment_date_idx').on(t.equipmentId, t.date),
+    index('equipment_res_member_idx').on(t.memberId),
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // Operational tables — not seed entities, so lib/types.ts is untouched
 // ---------------------------------------------------------------------------
 /**
@@ -386,6 +532,90 @@ export const events = sqliteTable(
     index('events_kind_idx').on(t.kind),
     index('events_at_idx').on(t.at),
   ],
+)
+
+// ---------------------------------------------------------------------------
+// Class moves
+// ---------------------------------------------------------------------------
+/**
+ * A rescheduled class occurrence.
+ *
+ * Stored as a *log of moves* rather than by editing `classes.day_of_week`,
+ * because the schedule screen supports moving one occurrence, this-and-later,
+ * or the whole series — and only the last of those is expressible as an edit to
+ * the class row. `components/schedule/schedule-engine.ts` already resolves a
+ * template date against a list of moves in exactly this shape; this table is
+ * that list, made durable. Later moves win, which is why insertion order is
+ * kept via `created_at`.
+ */
+export const classMoves = sqliteTable(
+  'class_moves',
+  {
+    id: text('id').primaryKey(),
+    classId: text('class_id')
+      .notNull()
+      .references(() => classes.id, { onDelete: 'cascade' }),
+    scope: text('scope').$type<'one' | 'following' | 'all'>().notNull(),
+    /** The occurrence date the move was made from. */
+    fromIso: text('from_iso').notNull(),
+    toIso: text('to_iso').notNull(),
+    toStartTime: text('to_start_time').notNull(),
+    createdAt: text('created_at').notNull(),
+    createdBy: text('created_by').notNull(),
+  },
+  (t) => [index('class_moves_class_idx').on(t.classId)],
+)
+
+// ---------------------------------------------------------------------------
+// Member notes
+// ---------------------------------------------------------------------------
+/**
+ * Notes are their own table rather than a JSON column on the member because
+ * they are appended constantly by different people and read back filtered by
+ * kind — and because the pinned ones are what the kiosk shows the front desk
+ * before it opens the door, which is a query, not a blob.
+ */
+export const memberNotes = sqliteTable(
+  'member_notes',
+  {
+    id: text('id').primaryKey(),
+    memberId: text('member_id')
+      .notNull()
+      .references(() => members.id),
+    kind: text('kind').$type<NoteKind>().notNull(),
+    body: text('body').notNull(),
+    authorId: text('author_id').notNull(),
+    timestamp: text('timestamp').notNull(),
+    pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
+  },
+  (t) => [index('member_notes_member_idx').on(t.memberId), index('member_notes_pinned_idx').on(t.pinned)],
+)
+
+// ---------------------------------------------------------------------------
+// Work items
+// ---------------------------------------------------------------------------
+/**
+ * The one fact the three derived queues cannot compute: whether a human has
+ * already dealt with a row. See the `WorkItem` doc comment in lib/types.ts.
+ *
+ * A row exists only once somebody has touched the item — an untouched queue row
+ * is simply absent, which is why the client treats "no row" as open rather than
+ * seeding one per derived item.
+ */
+export const workItems = sqliteTable(
+  'work_items',
+  {
+    id: text('id').primaryKey(),
+    queue: text('queue').$type<WorkQueue>().notNull(),
+    status: text('status').$type<WorkItemStatus>().notNull(),
+    assigneeId: text('assignee_id').references(() => staff.id),
+    snoozedUntil: text('snoozed_until'),
+    resolution: text('resolution'),
+    note: text('note'),
+    updatedAt: text('updated_at').notNull(),
+    updatedBy: text('updated_by').notNull(),
+  },
+  (t) => [index('work_items_queue_idx').on(t.queue, t.status)],
 )
 
 /** Studio settings — one row per key so a save touches only what changed. */

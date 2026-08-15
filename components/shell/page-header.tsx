@@ -74,7 +74,12 @@ export function PageHeader({
             </div>
           ) : null}
         </div>
-        {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+        {/* Page actions are buttons; they never belong on paper. */}
+        {actions ? (
+          <div data-print="hide" className="flex shrink-0 items-center gap-2">
+            {actions}
+          </div>
+        ) : null}
       </div>
 
       {children ? <div className="mt-3">{children}</div> : null}

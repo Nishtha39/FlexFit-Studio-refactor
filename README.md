@@ -1,9 +1,15 @@
 # FlexFit Studio
 
 Gym-operations software: members and profiles, retention and cohorts, class
-schedule, check-in and kiosk, leads pipeline, trainers, corporate credit pools,
-billing and dunning, a payments ledger, notifications, 12 reports, a member
-portal, settings, a ⌘K command palette and a role switcher.
+schedule, check-in and kiosk, leads pipeline, trainers, **equipment (asset
+register, maintenance, fault log and member reservations)**, corporate credit
+pools, billing and dunning, a payments ledger, notifications, 12 reports, a
+member portal, settings, a ⌘K command palette and a role switcher.
+
+Actions write to the database for real: freezing a member, taking a payment,
+activating a trainer, saving a setting, reporting a fault and reserving
+equipment all persist and survive a reload. **Outbound email really sends**, via
+Resend — see *Email* below.
 
 **Live:** https://flexfit-studio.amitynoidalibrary.workers.dev
 
@@ -40,10 +46,52 @@ pnpm dev              # http://localhost:3000 — UI against the seeded fixtures
 Against a real local database:
 
 ```bash
-pnpm db:local         # apply migrations to the local D1
-pnpm seed:local       # load server/db/seed.sql
-pnpm preview          # next build && wrangler dev — the Worker, as Cloudflare runs it
+pnpm db:local             # migrations: core tables
+pnpm db:local:equipment   # migrations: equipment tables
+pnpm seed:local           # load server/db/seed.sql
+pnpm equipment:local      # load server/db/seed-equipment.sql
+pnpm attendance:local     # reconcile daily totals with the check-in rows
+pnpm preview              # next build && wrangler dev — the Worker, as Cloudflare runs it
 ```
+
+`pnpm dev` alone cannot reach `/api/trpc`, so the app runs off the built-in seed
+and says so in a banner; write buttons refuse rather than pretending. Use
+`pnpm preview` to exercise anything that saves.
+
+## Checking it
+
+```bash
+pnpm verify:numbers   # 85 checks — does the same fact have the same value everywhere?
+pnpm test:api         # 54 checks — MUTATES, point it at a local D1 you can reseed
+pnpm smoke            # 14 read-only checks, safe against production
+pnpm test:ui          # 38 checks in a real browser (Playwright)
+```
+
+`verify:numbers` is the unusual one: every assertion re-derives the value a
+second time from the raw entities by a different route and demands the two
+match. It exists because a dashboard KPI, a report row and a detail page can
+each be individually correct and still disagree — which is exactly what it found
+on its first run (a "Visits · 30 days" tile reading 4,721 above a heatmap built
+from 2,703 rows).
+
+`test:ui` writes one payment row per run and does not remove it, so like
+`test:api` it belongs against a local database.
+
+## Email
+
+Sending is off until a key is bound, and the UI states that plainly rather than
+failing silently:
+
+```bash
+npx wrangler secret put RESEND_API_KEY   # from resend.com/api-keys — free tier, no card
+npx wrangler secret put EMAIL_FROM       # "FlexFit Studio <hello@yourdomain.com>"
+```
+
+`EMAIL_FROM` must be on a domain verified in Resend. Until one is, Resend's
+shared sender delivers only to the account owner — enough to prove the pipeline,
+which is what **Settings → Email → Send a test** is for. A key can be valid while
+the sender domain is not, and that only fails at send time, so a test send is the
+only honest check.
 
 ## Deploying
 
@@ -52,6 +100,18 @@ ships the Worker, waits out the rollout window and then runs the 54-check API
 suite against the live URL — so a merged backend change is visible on the
 deployed site without anyone running wrangler, and "the deploy went green" means
 the API actually answered rather than that the upload succeeded.
+
+**A schema change must reach D1 before the code that needs it**, or every
+request 500s on a missing table for the whole rollout:
+
+```bash
+pnpm db:remote:equipment && pnpm equipment:remote && pnpm attendance:remote
+pnpm deploy
+```
+
+The workflow deliberately blocks any push touching `server/db/migrations/` for
+that reason; re-run it from the Actions tab with *"Schema change already
+applied"* ticked once the migration is in.
 
 It needs two repository secrets (Settings → Secrets and variables → Actions):
 

@@ -4,13 +4,22 @@
 
 import type { Location } from "../types"
 
-export const locations: Location[] = [
+// `let` + setLocations(): ESM live bindings, so renaming a site in Settings
+// reaches the ~40 places that print a location name. The ids are fixed — they
+// are foreign keys on members, classes and check-ins — but the name, short name
+// and timezone are editable and stored. See lib/data/hydrate.ts.
+export let locations: Location[] = [
   { id: "downtown", name: "FlexFit Downtown", shortName: "Downtown", timezone: "Asia/Kolkata" },
   { id: "riverside", name: "FlexFit Riverside", shortName: "Riverside", timezone: "Asia/Kolkata" },
   { id: "north-loop", name: "FlexFit North Loop", shortName: "North Loop", timezone: "Asia/Kolkata" },
 ]
 
-export const locationById = new Map(locations.map((l) => [l.id, l]))
+export let locationById = new Map(locations.map((l) => [l.id, l]))
+
+export function setLocations(next: Location[]): void {
+  locations = next
+  locationById = new Map(locations.map((l) => [l.id, l]))
+}
 
 // Types
 export type * from "../types"
@@ -50,3 +59,15 @@ export { classes, classById, getClass, classesForDay, isFull } from "./classes"
 export { payments, paymentById, paymentsForMember, outstandingPayments } from "./payments"
 export { leads, leadById, leadsByStage, staleLeads } from "./leads"
 export { notifications, unreadCount } from "./notifications"
+export {
+  equipment,
+  equipmentById,
+  equipmentFaults,
+  equipmentServices,
+  equipmentReservations,
+  getEquipment,
+  setEquipmentData,
+  EQUIPMENT_CATEGORY_LABELS,
+} from "./equipment"
+export { memberNotes, notesFor, pinnedNotesFor, setMemberNotes, sortNotes, NOTE_META } from "./notes"
+export { workItems, workItemFor, stateOf, openIn, setWorkItems } from "./work-items"

@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { useRouter } from 'next/navigation'
 import { Mail, Phone } from 'lucide-react'
 import { Sheet, ConsequenceNotice } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
@@ -9,6 +10,9 @@ import { AgingChip, StatusChip } from '@/components/ui/status-chip'
 import { DataPoint } from '@/components/ui/card'
 import { fullDate, money } from '@/lib/format'
 import type { LeadStage } from '@/lib/types'
+import { api } from '@/lib/api/client'
+import { useStudio } from '@/lib/store/studio-store'
+import { CallLink, ComposeEmailDialog } from '@/components/comms/compose-email-dialog'
 import { LOSS_REASONS, SOURCE_LABELS, STAGES, stageMeta, type LeadCard } from './leads-data'
 
 /**
@@ -24,16 +28,30 @@ export function LeadPanel({
   onClose: () => void
   onMove: (lead: LeadCard, stage: LeadStage) => void
 }) {
+  const router = useRouter()
+  const { mutate, busy } = useStudio()
   const [note, setNote] = React.useState('')
   const [reason, setReason] = React.useState<string>(LOSS_REASONS[0])
+  const [emailing, setEmailing] = React.useState(false)
 
   React.useEffect(() => {
-    setNote('')
+    // Load the note that is actually stored rather than blanking the box —
+    // "visible to whoever picks this lead up next" was not true while it lived
+    // in component state.
+    setNote(lead?.note ?? '')
     setReason(LOSS_REASONS[0])
-  }, [lead?.id])
+  }, [lead?.id, lead?.note])
+
+  async function saveNote() {
+    if (!lead) return
+    await mutate(() => api.crm.addLeadNote.mutate({ leadId: lead.id, note: note.trim() }), {
+      success: () => ({ title: 'Note saved', detail: `On ${lead.name}` }),
+    })
+  }
 
   if (!lead) return null
   const meta = stageMeta.get(lead.stage)
+  const noteChanged = note.trim() !== (lead.note ?? '').trim()
 
   return (
     <Sheet
@@ -46,7 +64,12 @@ export function LeadPanel({
             Close
           </Button>
           {lead.stage === 'won' ? (
-            <Button variant="primary">Open member record</Button>
+            // A won lead has no member row pointing back at it — nothing links
+            // the two — so this searches the directory by name instead of
+            // pretending to open a record it cannot find.
+            <Button variant="primary" onClick={() => router.push(`/members?q=${encodeURIComponent(lead.name)}`)}>
+              Find member record
+            </Button>
           ) : (
             <Button variant="primary" onClick={() => onMove(lead, 'won')}>
               Convert to member
@@ -83,14 +106,14 @@ export function LeadPanel({
         <div className="flex flex-col gap-2 border-t border-border pt-4">
           <div className="flex items-center justify-between gap-2">
             <span className="text-sm text-foreground">{lead.phone}</span>
-            <Button variant="secondary" size="xs">
+            <CallLink phone={lead.phone}>
               <Phone />
               Call
-            </Button>
+            </CallLink>
           </div>
           <div className="flex items-center justify-between gap-2">
             <span className="truncate text-sm text-foreground">{lead.email}</span>
-            <Button variant="secondary" size="xs">
+            <Button variant="secondary" size="xs" onClick={() => setEmailing(true)}>
               <Mail />
               Email
             </Button>
@@ -125,7 +148,7 @@ export function LeadPanel({
           </Field>
         ) : null}
 
-        <Field label="Note" htmlFor="lead-note" help="Visible to whoever picks this lead up next.">
+        <Field label="Note" htmlFor="lead-note" help="Saved on the lead, visible to whoever picks it up next.">
           <Textarea
             id="lead-note"
             value={note}
@@ -133,7 +156,34 @@ export function LeadPanel({
             placeholder="What they asked for, what you promised, when to follow up."
           />
         </Field>
+        <div className="flex justify-end">
+          <Button variant="secondary" size="sm" disabled={!noteChanged || busy} onClick={saveNote}>
+            {busy ? 'Saving…' : noteChanged ? 'Save note' : 'Note saved'}
+          </Button>
+        </div>
       </div>
+
+      <ComposeEmailDialog
+        open={emailing}
+        onClose={() => setEmailing(false)}
+        to={lead.email}
+        toName={lead.name}
+        title={`Email ${lead.name}`}
+        templates={[
+          {
+            label: 'Follow up',
+            subject: `Following up on your visit to FlexFit`,
+            body: `Hi ${lead.name.split(' ')[0]},\n\nThanks for getting in touch about a membership at FlexFit Studio.\n\nI wanted to check whether you had any questions, and to offer you a look around at a time that suits you.\n\nJust reply here and I will book it in.\n\nBest,\n${lead.ownerName}\nFlexFit Studio`,
+          },
+          {
+            label: 'Book a tour',
+            subject: 'Come and have a look around FlexFit',
+            body: `Hi ${lead.name.split(' ')[0]},\n\nWould you like to come in for a tour? It takes about twenty minutes and you can try the floor while you are here.\n\nTell me a couple of times that work and I will confirm one.\n\nBest,\n${lead.ownerName}\nFlexFit Studio`,
+          },
+          { label: 'Blank', subject: '', body: `Hi ${lead.name.split(' ')[0]},\n\n\n\n${lead.ownerName}\nFlexFit Studio` },
+        ]}
+        send={({ subject, body }) => api.comms.emailLead.mutate({ leadId: lead.id, subject, body })}
+      />
     </Sheet>
   )
 }

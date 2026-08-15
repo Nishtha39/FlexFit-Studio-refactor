@@ -165,6 +165,7 @@ export function ConfirmDialog({
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   destructive = true,
+  confirmDisabled = false,
   children,
 }: {
   open: boolean
@@ -177,6 +178,13 @@ export function ConfirmDialog({
   confirmLabel?: string
   cancelLabel?: string
   destructive?: boolean
+  /**
+   * Block the confirm button. Use it when the dialog collects something the
+   * write needs, or when there is nothing left for the action to do — a confirm
+   * that fires a request the server is certain to refuse looks, from the other
+   * side of the screen, exactly like a button that does not work.
+   */
+  confirmDisabled?: boolean
   children?: React.ReactNode
 }) {
   return (
@@ -194,6 +202,7 @@ export function ConfirmDialog({
           <Button
             data-autofocus
             variant={destructive ? 'danger' : 'primary'}
+            disabled={confirmDisabled}
             onClick={() => {
               onConfirm()
               onClose()

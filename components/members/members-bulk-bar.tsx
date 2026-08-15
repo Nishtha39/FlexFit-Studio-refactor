@@ -4,20 +4,35 @@ import * as React from 'react'
 import { Mail, UserPlus, Snowflake, Tag as TagIcon, Download } from 'lucide-react'
 import { BulkActionBar } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
-import { ConfirmDialog } from '@/components/ui/modal'
-import { Field, Select } from '@/components/ui/input'
-import { useToast } from '@/components/ui/toast'
+import { ConfirmDialog, ConsequenceNotice } from '@/components/ui/modal'
+import { Field, Input, Select, Textarea } from '@/components/ui/input'
+import { api } from '@/lib/api/client'
+import { useStudio } from '@/lib/store/studio-store'
 import type { Member } from '@/lib/types'
-import { activeTrainers } from '@/lib/data/staff'
+import { activeTrainers, getStaff } from '@/lib/data/staff'
+import { getPlan } from '@/lib/data/plans'
 import { compactMoney, num, pluralize } from '@/lib/format'
+import { datedFilename, downloadCsv } from '@/lib/export'
 
 /**
  * Bulk actions on the directory. Each one states its consequence before the
  * confirm button — including the money involved, because "freeze 14 members"
  * and "pause ₹48,600 of monthly revenue" are the same action described honestly.
+ *
+ * All five now write. Four of them loop the selection one member at a time
+ * rather than sending a batch, which is deliberate: the API has no bulk
+ * endpoint, and one row per member means a refusal on member 9 leaves members
+ * 1-8 correctly changed instead of rolling back work that succeeded. The toast
+ * reports both numbers when they differ, so a partial run is never presented as
+ * a clean one.
  */
 
 type Action = 'message' | 'assign' | 'freeze' | 'tag' | 'export'
+
+interface RunResult {
+  ok: number
+  failed: number
+}
 
 export function MembersBulkBar({
   selectedMembers,
@@ -26,22 +41,181 @@ export function MembersBulkBar({
   selectedMembers: Member[]
   onClear: () => void
 }) {
-  const { toast } = useToast()
+  const { mutate, connection, busy } = useStudio()
   const [action, setAction] = React.useState<Action | null>(null)
   const [trainerId, setTrainerId] = React.useState(activeTrainers[0]?.id ?? '')
   const [tag, setTag] = React.useState('follow-up')
+  const [subject, setSubject] = React.useState('')
+  const [body, setBody] = React.useState('')
+  const [mailReady, setMailReady] = React.useState<{ configured: boolean; from: string } | null>(null)
 
   const count = selectedMembers.length
   const monthlyTotal = selectedMembers.reduce((sum, m) => sum + m.metrics.monthlyValue, 0)
-  const reachable = selectedMembers.filter((m) => m.status !== 'cancelled').length
+  // Cancelled members are skipped by every send: they have left, and mailing
+  // them is the kind of mistake that gets a studio reported.
+  const reachable = selectedMembers.filter((m) => m.status !== 'cancelled')
+  const freezable = selectedMembers.filter((m) => m.status === 'active')
   const label = pluralize(count, 'member')
 
   const close = () => setAction(null)
 
-  const run = (title: string, detail: string) => {
-    toast({ tone: 'good', title, detail, action: { label: 'Undo', onClick: () => {} } })
+  React.useEffect(() => {
+    if (action !== 'message') return
+    setSubject('')
+    setBody('')
+    if (connection === 'live') {
+      api.comms.emailStatus
+        .query()
+        .then((s) => setMailReady({ configured: s.configured, from: s.from }))
+        .catch(() => setMailReady(null))
+    }
+  }, [action, connection])
+
+  /**
+   * Apply a write to each member in turn, counting successes and failures
+   * instead of aborting on the first refusal.
+   */
+  async function each(members: Member[], fn: (m: Member) => Promise<unknown>): Promise<RunResult> {
+    let ok = 0
+    let failed = 0
+    for (const m of members) {
+      try {
+        await fn(m)
+        ok += 1
+      } catch {
+        failed += 1
+      }
+    }
+    return { ok, failed }
+  }
+
+  function partial(result: RunResult, verb: string): string {
+    return result.failed === 0
+      ? ''
+      : ` ${num(result.failed)} could not be ${verb} and ${result.failed === 1 ? 'was' : 'were'} left unchanged.`
+  }
+
+  /* ---------------------------------------------------------------------- */
+
+  const sendMessage = () => {
+    if (connection !== 'live' || reachable.length === 0) return
+    void mutate(
+      () =>
+        api.comms.broadcast.mutate({
+          memberIds: reachable.map((m) => m.id),
+          subject: subject.trim(),
+          body: body.trim(),
+        }),
+      {
+        success: (r) => ({
+          title: r.failed > 0 ? `Sent to ${num(r.sent)} of ${num(reachable.length)}` : `Message sent to ${pluralize(r.sent, 'member')}`,
+          detail:
+            r.failed > 0
+              ? `${num(r.failed)} did not go out — check the addresses on those members.`
+              : 'Delivered individually, so nobody sees anybody else’s address.',
+        }),
+      },
+    ).then((r) => {
+      if (r) {
+        close()
+        onClear()
+      }
+    })
+  }
+
+  const assignTrainer = () => {
+    if (connection !== 'live') return
+    const name = getStaff(trainerId)?.name ?? 'the trainer'
+    void mutate(
+      () => each(selectedMembers, (m) => api.ops.assignTrainer.mutate({ memberId: m.id, trainerId })),
+      {
+        success: (r) => ({
+          title: `${pluralize(r.ok, 'member')} assigned to ${name}`,
+          detail: `Their client count moves by ${num(r.ok)}.${partial(r, 'assigned')}`,
+        }),
+      },
+    ).then((r) => {
+      if (r) {
+        close()
+        onClear()
+      }
+    })
+  }
+
+  const applyTag = () => {
+    if (connection !== 'live') return
+    void mutate(
+      () =>
+        each(selectedMembers, (m) =>
+          // Tags are a set on the member, and the endpoint replaces the list —
+          // so the existing ones are sent back with the new one appended rather
+          // than being silently dropped.
+          api.ops.setMemberTags.mutate({ memberId: m.id, tags: [...m.tags, tag] }),
+        ),
+      {
+        success: (r) => ({
+          title: `“${tag}” added to ${pluralize(r.ok, 'member')}`,
+          detail: `They are now findable under that tag in the directory filters.${partial(r, 'tagged')}`,
+        }),
+      },
+    ).then((r) => {
+      if (r) {
+        close()
+        onClear()
+      }
+    })
+  }
+
+  const freeze = () => {
+    if (connection !== 'live' || freezable.length === 0) return
+    void mutate(
+      () =>
+        each(freezable, (m) => api.ops.setMemberStatus.mutate({ memberId: m.id, status: 'frozen' })),
+      {
+        success: (r) => ({
+          title: `${pluralize(r.ok, 'membership')} frozen`,
+          detail: `${compactMoney(freezable.reduce((s, m) => s + m.metrics.monthlyValue, 0))}/mo paused.${partial(r, 'frozen')}`,
+        }),
+      },
+    ).then((r) => {
+      if (r) {
+        close()
+        onClear()
+      }
+    })
+  }
+
+  /**
+   * Export is the one action that does not touch the server — the rows are
+   * already on this machine, so it builds the file here. That also means it is
+   * the only one that still works with the API unreachable.
+   */
+  const exportCsv = () => {
+    downloadCsv(datedFilename('members'), selectedMembers, [
+      { header: 'S.no', value: (_m, i) => i + 1 },
+      { header: 'Name', value: (m) => m.name },
+      { header: 'Email', value: (m) => m.email },
+      { header: 'Phone', value: (m) => m.phone },
+      { header: 'Status', value: (m) => m.status },
+      { header: 'Plan', value: (m) => getPlan(m.planId)?.name ?? m.planId },
+      { header: 'Home location', value: (m) => m.homeLocation },
+      { header: 'Joined', value: (m) => m.joinedDate },
+      { header: 'Monthly value', value: (m) => m.metrics.monthlyValue },
+      { header: 'Lifetime value', value: (m) => m.metrics.lifetimeValue },
+      { header: 'Visits (30d)', value: (m) => m.metrics.visitsLast30 },
+      { header: 'Last visit', value: (m) => m.metrics.lastVisit ?? '' },
+      { header: 'Risk', value: (m) => m.risk.score },
+      {
+        header: 'Trainer',
+        value: (m) => (m.assignedTrainerId ? (getStaff(m.assignedTrainerId)?.name ?? m.assignedTrainerId) : ''),
+      },
+      { header: 'Tags', value: (m) => m.tags.join(' ') },
+    ])
+    close()
     onClear()
   }
+
+  const messageValid = subject.trim().length > 0 && body.trim().length > 0
 
   return (
     <>
@@ -72,35 +246,53 @@ export function MembersBulkBar({
       <ConfirmDialog
         open={action === 'message'}
         onClose={close}
-        onConfirm={() =>
-          run('Message queued', `Sending to ${pluralize(reachable, 'member')} in the next batch.`)
-        }
+        onConfirm={sendMessage}
         title={`Message ${label}`}
         destructive={false}
-        confirmLabel={`Send to ${num(reachable)}`}
-        consequenceTone={reachable === count ? 'info' : 'warn'}
+        confirmDisabled={!messageValid || busy || connection !== 'live' || reachable.length === 0}
+        confirmLabel={busy ? 'Sending…' : `Send to ${num(reachable.length)}`}
+        consequenceTone={reachable.length === count ? 'info' : 'warn'}
         consequence={
-          reachable === count
-            ? `All ${num(count)} selected members will receive this message.`
-            : `${num(count - reachable)} of ${num(count)} are cancelled and will be skipped — ${num(reachable)} will receive it.`
+          reachable.length === count
+            ? `All ${num(count)} selected members will receive this message, sent one at a time so nobody sees anybody else's address.`
+            : `${num(count - reachable.length)} of ${num(count)} are cancelled and will be skipped — ${num(reachable.length)} will receive it.`
         }
       >
-        <p className="text-sm leading-relaxed text-muted-foreground">
-          Composing the message body is part of the broadcast composer. This queues the audience.
-        </p>
+        <div className="flex flex-col gap-3">
+          {mailReady && !mailReady.configured ? (
+            <ConsequenceNotice
+              tone="danger"
+              headline="Outbound email is not configured"
+              detail="No RESEND_API_KEY is bound to this Worker, so sending will fail. Set it with `npx wrangler secret put RESEND_API_KEY` and add EMAIL_FROM for your verified domain."
+            />
+          ) : mailReady ? (
+            <p className="text-micro text-muted-foreground">
+              Sends for real, from <span className="font-mono">{mailReady.from}</span>.
+            </p>
+          ) : null}
+          <Field label="Subject" htmlFor="bulk-subject">
+            <Input id="bulk-subject" value={subject} onChange={(e) => setSubject(e.currentTarget.value)} />
+          </Field>
+          <Field label="Message" htmlFor="bulk-body" help="Sent as written — there is no merge field here.">
+            <Textarea
+              id="bulk-body"
+              className="min-h-40"
+              value={body}
+              onChange={(e) => setBody(e.currentTarget.value)}
+            />
+          </Field>
+        </div>
       </ConfirmDialog>
 
       {/* Assign trainer — reassignment overwrites an existing assignment. */}
       <ConfirmDialog
         open={action === 'assign'}
         onClose={close}
-        onConfirm={() => {
-          const name = activeTrainers.find((t) => t.id === trainerId)?.name ?? 'trainer'
-          run('Trainer assigned', `${label} now assigned to ${name}.`)
-        }}
+        onConfirm={assignTrainer}
         title={`Assign trainer to ${label}`}
         destructive={false}
-        confirmLabel="Assign"
+        confirmDisabled={busy || connection !== 'live' || !trainerId}
+        confirmLabel={busy ? 'Assigning…' : 'Assign'}
         consequenceTone="warn"
         consequence={(() => {
           const already = selectedMembers.filter((m) => m.assignedTrainerId !== null).length
@@ -128,10 +320,11 @@ export function MembersBulkBar({
       <ConfirmDialog
         open={action === 'tag'}
         onClose={close}
-        onConfirm={() => run('Tag applied', `"${tag}" added to ${label}.`)}
+        onConfirm={applyTag}
         title={`Tag ${label}`}
         destructive={false}
-        confirmLabel="Apply tag"
+        confirmDisabled={busy || connection !== 'live' || tag.trim().length === 0}
+        confirmLabel={busy ? 'Applying…' : 'Apply tag'}
         consequenceTone="info"
         consequence="Tags are additive and can be removed later. No billing or access changes."
       >
@@ -150,13 +343,16 @@ export function MembersBulkBar({
       <ConfirmDialog
         open={action === 'freeze'}
         onClose={close}
-        onConfirm={() =>
-          run('Memberships frozen', `${label} frozen. ${compactMoney(monthlyTotal)}/mo paused.`)
-        }
+        onConfirm={freeze}
         title={`Freeze ${label}`}
-        confirmLabel={`Freeze ${num(count)}`}
+        confirmDisabled={busy || connection !== 'live' || freezable.length === 0}
+        confirmLabel={busy ? 'Freezing…' : `Freeze ${num(freezable.length)}`}
         consequenceTone="danger"
-        consequence={`Billing stops and access is revoked for ${label} — ${compactMoney(monthlyTotal)} of monthly revenue is paused.`}
+        consequence={
+          freezable.length === count
+            ? `Billing stops and access is revoked for ${label} — ${compactMoney(monthlyTotal)} of monthly revenue is paused.`
+            : `${num(count - freezable.length)} of ${num(count)} are not active memberships and will be skipped. ${num(freezable.length)} will be frozen, pausing ${compactMoney(freezable.reduce((s, m) => s + m.metrics.monthlyValue, 0))} a month.`
+        }
       >
         <p className="text-sm leading-relaxed text-muted-foreground">
           Frozen members keep their remaining credits and tenure. Unfreezing restarts billing on the
@@ -168,13 +364,18 @@ export function MembersBulkBar({
       <ConfirmDialog
         open={action === 'export'}
         onClose={close}
-        onConfirm={() => run('Export ready', `${label} exported as CSV.`)}
+        onConfirm={exportCsv}
         title={`Export ${label}`}
         destructive={false}
         confirmLabel="Download CSV"
         consequenceTone="warn"
-        consequence="The file includes names, emails, phone numbers and payment history — personal data leaving the system."
-      />
+        consequence="The file includes names, emails and phone numbers — personal data leaving the system, onto this device."
+      >
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          One row per selected member with their plan, status, visit counts, risk score and tags. It
+          downloads straight to this device; nothing is uploaded anywhere.
+        </p>
+      </ConfirmDialog>
     </>
   )
 }

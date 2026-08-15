@@ -219,6 +219,32 @@ function BulkActionBar({
   )
 }
 
+/**
+ * Serial-number column. `S.no` is a positional label — "the 4th row of what I
+ * am looking at" — so it counts the rendered rows and deliberately does NOT
+ * follow the record. Sort or filter the table and row 1 is still whatever is at
+ * the top; that is what makes it useful for reading a number out to someone.
+ *
+ * It is muted and right-aligned so it reads as a gutter rather than as data,
+ * and it carries `aria-hidden` because a screen reader announcing "one, two,
+ * three" before every row is noise — the row's real identity is the next cell.
+ */
+function SerialTh({ width = 44 }: { width?: number }) {
+  return (
+    <Th align="right" width={width} className="pr-2">
+      S.no
+    </Th>
+  )
+}
+
+function SerialTd({ index, className }: { index: number; className?: string }) {
+  return (
+    <Td align="right" aria-hidden className={cn('pr-2 text-micro text-muted-foreground tnum', className)}>
+      {index + 1}
+    </Td>
+  )
+}
+
 /** Text + secondary line stacked inside a single dense cell. */
 function CellStack({
   primary,
@@ -249,6 +275,8 @@ export {
   Td,
   SelectCell,
   SelectAllCell,
+  SerialTh,
+  SerialTd,
   BulkActionBar,
   CellStack,
 }

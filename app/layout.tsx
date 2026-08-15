@@ -13,6 +13,19 @@ export const metadata: Metadata = {
     'Membership, scheduling, retention and billing operations for multi-location gyms and studios.',
   applicationName: 'FlexFit Studio',
   generator: 'v0.app',
+  /**
+   * The icon files were already in `public/`, but nothing declared them — so no
+   * `<link rel="icon">` was emitted, every browser fell back to probing
+   * `/favicon.ico`, and that 404'd on every page load while the tab showed a
+   * blank page icon. Declaring them uses the files that are already shipped.
+   */
+  icons: {
+    icon: [
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/icon-light-32x32.png', sizes: '32x32', type: 'image/png' },
+    ],
+    apple: '/apple-icon.png',
+  },
 }
 
 export const viewport: Viewport = {

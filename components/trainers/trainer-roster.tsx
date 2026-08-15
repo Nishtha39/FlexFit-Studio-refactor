@@ -6,22 +6,40 @@ import { PageHeader, PageBody } from '@/components/shell/page-header'
 import { RequireScreen } from '@/components/shell/app-shell'
 import { Card, CardHeader, KpiTile, CapacityBar } from '@/components/ui/card'
 import { StatusChip } from '@/components/ui/status-chip'
-import { CellStack, Table, TableWrap, Tbody, Td, Th, Thead, Tr } from '@/components/ui/table'
-import { compactMoney, fullDate, num, percent } from '@/lib/format'
+import {
+  CellStack,
+  SerialTd,
+  SerialTh,
+  Table,
+  TableWrap,
+  Tbody,
+  Td,
+  Th,
+  Thead,
+  Tr,
+} from '@/components/ui/table'
+import { compactMoney, num, percent } from '@/lib/format'
+import { useStudio } from '@/lib/store/studio-store'
 import { trainerLoads } from './trainers-data'
+import { TrainerStatusCell } from './trainer-status-toggle'
+import { EmailStaffButton } from './email-staff-button'
 
 /**
  * Trainer roster. Fill rate says whether their classes sell; client retention
  * says whether the members assigned to them stay. Both, or the number lies.
  */
 export function TrainerRoster() {
+  // Subscribes the screen to hydration: `trainerLoads` is rebuilt in place when
+  // a trainer is activated or deactivated, so without reading `version` the
+  // chip would flip and the totals above it would not.
+  const { version } = useStudio()
   const active = trainerLoads.filter((l) => l.trainer.active)
   const seats = active.reduce((s, l) => s + l.seats, 0)
   const booked = active.reduce((s, l) => s + l.booked, 0)
   const hours = active.reduce((s, l) => s + l.hours, 0)
 
   return (
-    <RequireScreen screen="trainers">
+    <RequireScreen screen="trainers" key={version}>
       <PageHeader
         title="Trainers"
         crumbs={[{ label: 'FlexFit Studio', href: '/dashboard' }, { label: 'Trainers' }]}
@@ -52,12 +70,13 @@ export function TrainerRoster() {
         <Card className="overflow-hidden">
           <CardHeader
             title="Roster"
-            description="Departed trainers stay listed — their classes and clients still had to go somewhere."
+            description="Departed trainers stay listed — their classes and clients still had to go somewhere. Deactivating someone records the departure; it does not reassign their work."
           />
           <TableWrap>
             <Table>
               <Thead>
                 <tr>
+                  <SerialTh />
                   <Th>Trainer</Th>
                   <Th width={170}>Specialties</Th>
                   <Th align="right" width={90}>Classes</Th>
@@ -66,12 +85,14 @@ export function TrainerRoster() {
                   <Th align="right" width={100}>Clients</Th>
                   <Th align="right" width={110}>Low risk</Th>
                   <Th align="right" width={120}>Client value</Th>
-                  <Th width={120}>Status</Th>
+                  <Th width={210}>Status</Th>
+                  <Th width={90}>Contact</Th>
                 </tr>
               </Thead>
               <Tbody>
-                {trainerLoads.map((load) => (
+                {trainerLoads.map((load, i) => (
                   <Tr key={load.trainer.id}>
+                    <SerialTd index={i} />
                     <Td>
                       <CellStack
                         primary={
@@ -98,15 +119,10 @@ export function TrainerRoster() {
                     </Td>
                     <Td align="right" className="tnum">{compactMoney(load.monthlyValue)}</Td>
                     <Td>
-                      {load.trainer.active ? (
-                        <StatusChip tone="good" label="Active" />
-                      ) : (
-                        <StatusChip
-                          tone="neutral"
-                          label={`Left ${fullDate(load.trainer.activeTo as string)}`}
-                          title="Departure drives the March attendance step-down"
-                        />
-                      )}
+                      <TrainerStatusCell trainer={load.trainer} />
+                    </Td>
+                    <Td>
+                      <EmailStaffButton staff={load.trainer} />
                     </Td>
                   </Tr>
                 ))}

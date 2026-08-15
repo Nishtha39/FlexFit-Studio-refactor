@@ -18,7 +18,9 @@ import { Card, CardHeader, CardFooter } from '@/components/ui/card'
 import { StatusChip, type Tone } from '@/components/ui/status-chip'
 import { ConfirmDialog } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
-import { useToast } from '@/components/ui/toast'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
+import { stateOf } from '@/lib/data/work-items'
 import { compactMoney, num, pluralize } from '@/lib/format'
 import {
   attentionItems,
@@ -59,6 +61,12 @@ interface PendingConfirm {
  * Resolution state lives above the queue because the page header reports the
  * same three numbers ("N to act on · ₹X/mo at stake"). Kept local to the queue,
  * clearing an item silently disagreed with the header directly above it.
+ *
+ * It is stored now rather than held in `useState`. The items themselves stay
+ * derived — a failed payment is on this list because it failed — but "the owner
+ * has dealt with this" is a fact about a person, not about the data, so it lives
+ * in `work_items` and survives a reload. Previously the whole morning's work
+ * reappeared on the queue the moment the page was refreshed.
  */
 interface AttentionState {
   open: AttentionItem[]
@@ -66,16 +74,20 @@ interface AttentionState {
   resolvedIds: string[]
   criticalCount: number
   valueAtStake: number
-  markResolved: (id: string) => void
+  markResolved: (item: AttentionItem, resolution: string) => void
   markUnresolved: (id: string) => void
+  /** False when the API is unreachable — the buttons disable off this. */
+  canWrite: boolean
 }
 
 const AttentionContext = React.createContext<AttentionState | null>(null)
 
 export function AttentionProvider({ children }: { children: React.ReactNode }) {
-  const [resolvedIds, setResolvedIds] = React.useState<string[]>([])
+  const { mutate, connection } = useStudio()
+  const version = useDataVersion()
 
   const value = React.useMemo<AttentionState>(() => {
+    const resolvedIds = attentionItems.filter((i) => stateOf(i.id).status === 'done').map((i) => i.id)
     const open = attentionItems.filter((i) => !resolvedIds.includes(i.id))
     return {
       open,
@@ -83,10 +95,49 @@ export function AttentionProvider({ children }: { children: React.ReactNode }) {
       resolvedIds,
       criticalCount: open.filter((i) => i.severity === 'critical').length,
       valueAtStake: attentionValue(open),
-      markResolved: (id) => setResolvedIds((prev) => (prev.includes(id) ? prev : [...prev, id])),
-      markUnresolved: (id) => setResolvedIds((prev) => prev.filter((x) => x !== id)),
+      canWrite: connection === 'live',
+      markResolved: (item, resolution) => {
+        if (connection !== 'live') return
+        void mutate(
+          () =>
+            api.queue.setState.mutate({
+              id: item.id,
+              queue: 'attention',
+              status: 'done',
+              resolution,
+            }),
+          {
+            success: () => ({
+              title: resolution,
+              detail: `${item.title} cleared from the queue.`,
+              action: {
+                label: 'Undo',
+                onClick: () => {
+                  void mutate(
+                    () =>
+                      api.queue.setState.mutate({
+                        id: item.id,
+                        queue: 'attention',
+                        status: 'open',
+                      }),
+                    { success: () => ({ title: 'Back on the queue', detail: item.title }) },
+                  )
+                },
+              },
+            }),
+          },
+        )
+      },
+      markUnresolved: (id) => {
+        if (connection !== 'live') return
+        void mutate(() => api.queue.setState.mutate({ id, queue: 'attention', status: 'open' }), {
+          success: () => ({ title: 'Back on the queue' }),
+        })
+      },
     }
-  }, [resolvedIds])
+    // stateOf and attentionItems are module state that hydrate() rebuilds.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version, connection, mutate])
 
   return <AttentionContext.Provider value={value}>{children}</AttentionContext.Provider>
 }
@@ -98,8 +149,7 @@ export function useAttention(): AttentionState {
 }
 
 export function AttentionQueue() {
-  const { toast } = useToast()
-  const { open, done, resolvedIds, criticalCount, valueAtStake, markResolved, markUnresolved } =
+  const { open, done, resolvedIds, criticalCount, valueAtStake, markResolved, canWrite } =
     useAttention()
   const [pending, setPending] = React.useState<PendingConfirm | null>(null)
   const [showResolved, setShowResolved] = React.useState(false)
@@ -107,20 +157,13 @@ export function AttentionQueue() {
   const visible = showResolved ? attentionItems : open
   const critical = criticalCount
 
+  // The toast comes from `mutate` now, so the success message can only appear
+  // once the row is actually stored — and its Undo is a write of its own.
   const resolve = React.useCallback(
     (item: AttentionItem, resolution: AttentionResolution) => {
-      markResolved(item.id)
-      toast({
-        tone: 'good',
-        title: resolution.result,
-        detail: `${item.title} cleared from the queue.`,
-        action: {
-          label: 'Undo',
-          onClick: () => markUnresolved(item.id),
-        },
-      })
+      markResolved(item, resolution.result)
     },
-    [toast, markResolved, markUnresolved],
+    [markResolved],
   )
 
   const act = (item: AttentionItem, resolution: AttentionResolution) => {
@@ -167,6 +210,7 @@ export function AttentionQueue() {
               rank={index + 1}
               resolved={resolvedIds.includes(item.id)}
               onAct={act}
+              disabled={!canWrite}
             />
           ))}
         </ul>
@@ -204,11 +248,13 @@ function AttentionRow({
   rank,
   resolved,
   onAct,
+  disabled,
 }: {
   item: AttentionItem
   rank: number
   resolved: boolean
   onAct: (item: AttentionItem, resolution: AttentionResolution) => void
+  disabled: boolean
 }) {
   const kind = KIND_META[item.kind]
   const severity = SEVERITY_META[item.severity]
@@ -269,13 +315,19 @@ function AttentionRow({
 
           {!resolved ? (
             <div className="mt-2.5 flex flex-wrap items-center gap-2">
-              <Button variant="primary" size="sm" onClick={() => onAct(item, item.primary)}>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={disabled}
+                onClick={() => onAct(item, item.primary)}
+              >
                 {item.primary.label}
               </Button>
               {item.secondary ? (
                 <Button
                   variant="secondary"
                   size="sm"
+                  disabled={disabled}
                   onClick={() => item.secondary && onAct(item, item.secondary)}
                 >
                   {item.secondary.label}

@@ -1,10 +1,12 @@
 'use client'
 
 import * as React from 'react'
-import type { ID, Member } from '@/lib/types'
+import type { ID, LocationId, Member } from '@/lib/types'
 import { members } from '@/lib/data/members'
 import { checkIns } from '@/lib/data/attendance'
 import { NOW } from '@/lib/seed'
+import { api } from '@/lib/api/client'
+import { useStudio } from '@/lib/store/studio-store'
 import { decide, needsWaiver, type Decision, type Outcome, type ResolveKind } from './kiosk-engine'
 
 /**
@@ -88,7 +90,24 @@ const PAST_TENSE: Record<ResolveKind, string> = {
   none: 'Admitted',
 }
 
+/**
+ * The door.
+ *
+ * The feed, the waiver ledger and the credits spent this session are local —
+ * they are a view of what happened at this terminal in the last few minutes,
+ * and they are rebuilt from the database on load. What is NOT local any more is
+ * the check-in itself: `admit` writes a real visit row, so the member's history,
+ * their remaining credits, the churn score that reads them and the attendance
+ * heatmap all move together. Before this, someone could be admitted all day and
+ * their "days since last visit" would keep climbing.
+ *
+ * Every write is fire-and-forget from the door's point of view. The queue at
+ * the desk cannot wait on a round trip, and the local feed is what the staffer
+ * is looking at; a failed write surfaces through the store's own error toast
+ * rather than by holding the turnstile.
+ */
 export function useKioskSession() {
+  const { mutate, connection } = useStudio()
   const [stage, setStage] = React.useState<KioskStage>({ kind: 'idle' })
   const [feed, setFeed] = React.useState<KioskEvent[]>(() => seedFeed())
   const [waivers, setWaivers] = React.useState<WaiverRecord[]>([])
@@ -193,12 +212,73 @@ export function useKioskSession() {
     setAnnouncement('')
   }, [])
 
+  /**
+   * Write what happened at the door.
+   *
+   * ONE call, awaited in order, never several fired at once. The steps are not
+   * independent: `ops.checkIn` refuses a membership that is not live, so an
+   * unfreeze has to land *before* the visit or the visit is rejected by the
+   * state the unfreeze was about to clear. Two parallel `mutate()` calls also
+   * each trigger their own re-read, and the second can overwrite the first.
+   *
+   * A door override is deliberately NOT persisted as a visit. `ops.checkIn`
+   * blocks a frozen or cancelled membership, and it is right to — letting the
+   * kiosk write visits for cancelled members is how the attendance numbers stop
+   * meaning anything. The override is still recorded on the feed, which is what
+   * an override is: a note that a human decided, not a normal check-in.
+   */
+  const commit = React.useCallback(
+    (m: Member, opts: { visit: boolean; payment?: { amount: number; description: string; againstPlan: boolean }; reactivate?: boolean }) => {
+      if (connection !== 'live') return
+      void mutate(
+        async () => {
+          if (opts.reactivate) {
+            await api.ops.setMemberStatus.mutate({ memberId: m.id, status: 'active' })
+          }
+          if (opts.payment) {
+            await api.ops.takePayment.mutate({
+              memberId: m.id,
+              amount: opts.payment.amount,
+              method: 'card',
+              description: opts.payment.description,
+              planId: opts.payment.againstPlan ? m.planId : null,
+            })
+          }
+          if (opts.visit) {
+            await api.ops.checkIn.mutate({
+              memberId: m.id,
+              location: m.homeLocation as LocationId,
+              classId: null,
+            })
+          }
+          return true
+        },
+        {
+          success: () => ({
+            title: `${m.firstName} — saved`,
+            detail: [
+              opts.reactivate ? 'membership reactivated' : null,
+              opts.payment ? `₹${opts.payment.amount} taken` : null,
+              opts.visit ? 'visit recorded' : null,
+            ]
+              .filter(Boolean)
+              .join(' · '),
+          }),
+        },
+      )
+    },
+    [connection, mutate],
+  )
+
   /** Commit an admission: decrement credits, log the event, return to idle. */
   const admit = React.useCallback(
     (m: Member, decision: Decision, note?: string) => {
       if (m.metrics.creditsRemaining !== null) {
         setSpent((prev) => ({ ...prev, [m.id]: (prev[m.id] ?? 0) + 1 }))
       }
+      // `note` is set only on a staff override, where the membership itself is
+      // what blocked them — see `commit`.
+      commit(m, { visit: !note })
       record({
         memberId: m.id,
         name: m.name,
@@ -209,7 +289,7 @@ export function useKioskSession() {
       })
       reset()
     },
-    [record, reset],
+    [commit, record, reset],
   )
 
   /** Apply an in-place resolution, then admit. */
@@ -219,6 +299,26 @@ export function useKioskSession() {
         setWaivers((prev) => [...prev, { memberId: m.id, signedAt: new Date(NOW) }])
       }
       const paid = decision.resolve === 'take-payment' || decision.resolve === 'sell-drop-in'
+      const reactivate = decision.resolve === 'unfreeze' || decision.resolve === 'renew'
+
+      commit(m, {
+        // A day pass is a sale to somebody the membership rules would refuse, so
+        // it buys entry without becoming a membership visit.
+        visit: decision.resolve !== 'sell-drop-in',
+        payment:
+          paid && decision.amountDue
+            ? {
+                amount: decision.amountDue,
+                description:
+                  decision.resolve === 'sell-drop-in'
+                    ? 'Day pass at the door'
+                    : 'Membership dues taken at the door',
+                againstPlan: decision.resolve !== 'sell-drop-in',
+              }
+            : undefined,
+        reactivate,
+      })
+
       // A day pass is bought access, so it does not eat a plan credit.
       if (!paid && m.metrics.creditsRemaining !== null) {
         setSpent((prev) => ({ ...prev, [m.id]: (prev[m.id] ?? 0) + 1 }))
@@ -233,7 +333,7 @@ export function useKioskSession() {
       })
       reset()
     },
-    [record, reset],
+    [commit, record, reset],
   )
 
   /** Turn a held member away — recorded, because a refusal is an event too. */

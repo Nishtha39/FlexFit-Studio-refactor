@@ -14,6 +14,7 @@ import {
   Building2,
   Filter,
   Dumbbell,
+  Boxes,
   FileBarChart,
   Settings,
   Bookmark,
@@ -44,6 +45,7 @@ const NAV: NavItem[] = [
   { screen: 'payments', label: 'Payments', href: '/payments', icon: CreditCard },
   { screen: 'corporate', label: 'Corporate', href: '/corporate', icon: Building2 },
   { screen: 'trainers', label: 'Trainers', href: '/trainers', icon: Dumbbell },
+  { screen: 'equipment', label: 'Equipment', href: '/equipment', icon: Boxes },
   { screen: 'reports', label: 'Reports', href: '/reports', icon: FileBarChart },
   { screen: 'settings', label: 'Settings', href: '/settings', icon: Settings },
 ]

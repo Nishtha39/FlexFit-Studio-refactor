@@ -277,7 +277,7 @@ function buildAttention(): AttentionItem[] {
   return items.sort((a, b) => attentionRank(b) - attentionRank(a))
 }
 
-export const attentionItems: AttentionItem[] = buildAttention()
+export let attentionItems: AttentionItem[] = buildAttention()
 
 export function attentionValue(items: AttentionItem[]): number {
   return items.reduce((s, i) => s + i.valuePerMonth, 0)
@@ -307,27 +307,40 @@ function sumRange(from: number, to: number): number {
   return slice.reduce((s, d) => s + d.count, 0)
 }
 
-export const attendance30 = sumRange(0, 30)
-export const attendancePrev30 = sumRange(30, 60)
+// Each headline number is a named formula so the verification suite can
+// re-derive it independently. They are `let` because the whole block is
+// recomputed by rebuild() once the store hydrates from the database.
+const countCancelledLast30 = () =>
+  members.filter((m) => {
+    if (m.status !== 'cancelled' || !m.endDate) return false
+    return new Date(m.endDate).getTime() >= addDays(NOW, -30).getTime()
+  }).length
 
-export const mrr = activeMembers.reduce((s, m) => s + m.metrics.monthlyValue, 0)
+const sumOutstanding = () =>
+  payments
+    .filter((p) => p.status === 'failed' || p.status === 'pending')
+    .reduce((s, p) => s + p.amount, 0)
 
-const cancelledLast30 = members.filter((m) => {
-  if (m.status !== 'cancelled' || !m.endDate) return false
-  return new Date(m.endDate).getTime() >= addDays(NOW, -30).getTime()
-}).length
+export let attendance30 = sumRange(0, 30)
+export let attendancePrev30 = sumRange(30, 60)
 
-export const churnRate = activeMembers.length > 0 ? (cancelledLast30 / activeMembers.length) * 100 : 0
+/** MRR = sum of monthlyValue over members on the books (frozen included). */
+export let mrr = activeMembers.reduce((s, m) => s + m.metrics.monthlyValue, 0)
 
-const bookedSeats = classes.reduce((s, c) => s + c.roster.length, 0)
-const totalSeats = classes.reduce((s, c) => s + c.capacity, 0)
-export const fillRate = totalSeats > 0 ? (bookedSeats / totalSeats) * 100 : 0
+let cancelledLast30 = countCancelledLast30()
 
-const outstanding = payments
-  .filter((p) => p.status === 'failed' || p.status === 'pending')
-  .reduce((s, p) => s + p.amount, 0)
+/** Churn = members cancelled in the last 30 days / members on the books. */
+export let churnRate = activeMembers.length > 0 ? (cancelledLast30 / activeMembers.length) * 100 : 0
 
-export const kpis: Kpi[] = [
+let bookedSeats = classes.reduce((s, c) => s + c.roster.length, 0)
+let totalSeats = classes.reduce((s, c) => s + c.capacity, 0)
+/** Fill rate = booked seats / total weekly seats. */
+export let fillRate = totalSeats > 0 ? (bookedSeats / totalSeats) * 100 : 0
+
+let outstanding = sumOutstanding()
+
+function buildKpis(): Kpi[] {
+  return [
   {
     id: 'mrr',
     label: 'Recurring revenue',
@@ -390,7 +403,10 @@ export const kpis: Kpi[] = [
     footnote: `${payments.filter((p) => p.status === 'failed' || p.status === 'pending').length} open invoices`,
     href: '/payments',
   },
-]
+  ]
+}
+
+export let kpis: Kpi[] = buildKpis()
 
 /* -------------------------------------------------------------------------- */
 /*  Revenue by source — 12 months, stacked                                    */
@@ -453,9 +469,9 @@ function buildRevenue(): RevenueMonth[] {
   return out
 }
 
-export const revenueByMonth: RevenueMonth[] = buildRevenue()
+export let revenueByMonth: RevenueMonth[] = buildRevenue()
 
-export const revenueMax = Math.max(...revenueByMonth.map((m) => m.total))
+export let revenueMax = Math.max(...revenueByMonth.map((m) => m.total))
 
 export function revenueMix(row: RevenueMonth): { id: RevenueSource; value: number; share: number }[] {
   return REVENUE_SOURCES.map((s) => ({
@@ -469,12 +485,12 @@ export function revenueMix(row: RevenueMonth): { id: RevenueSource; value: numbe
 /*  Attendance heatmap — hour × weekday                                       */
 /* -------------------------------------------------------------------------- */
 
-export const heatmap: number[][] = hourWeekdayMatrix()
+export let heatmap: number[][] = hourWeekdayMatrix()
 
 /** Only the hours the gym is actually open — an all-zero 3am column is noise. */
 export const HEATMAP_HOURS: number[] = Array.from({ length: 18 }, (_, i) => i + 5)
 
-export const heatmapMax = Math.max(
+export let heatmapMax = Math.max(
   ...heatmap.flatMap((row) => HEATMAP_HOURS.map((h) => row[h] ?? 0)),
 )
 
@@ -484,7 +500,7 @@ export interface HeatCell {
   count: number
 }
 
-export const heatmapPeak: HeatCell = (() => {
+function buildPeak(): HeatCell {
   let best: HeatCell = { weekday: 1, hour: 18, count: -1 }
   for (let d = 0; d < 7; d++) {
     for (const h of HEATMAP_HOURS) {
@@ -493,10 +509,12 @@ export const heatmapPeak: HeatCell = (() => {
     }
   }
   return best
-})()
+}
+
+export let heatmapPeak: HeatCell = buildPeak()
 
 /** The quietest staffed hour — where a trainer is being paid to watch an empty floor. */
-export const heatmapTrough: HeatCell = (() => {
+function buildTrough(): HeatCell {
   let worst: HeatCell = { weekday: 1, hour: 14, count: Number.POSITIVE_INFINITY }
   for (let d = 0; d < 7; d++) {
     for (const h of HEATMAP_HOURS) {
@@ -506,7 +524,9 @@ export const heatmapTrough: HeatCell = (() => {
     }
   }
   return worst
-})()
+}
+
+export let heatmapTrough: HeatCell = buildTrough()
 
 export function hourLabel(hour: number): string {
   const suffix = hour >= 12 ? 'p' : 'a'
@@ -573,9 +593,9 @@ function buildCohorts(): Cohort[] {
   return out
 }
 
-export const cohorts: Cohort[] = buildCohorts()
+export let cohorts: Cohort[] = buildCohorts()
 
-export const cohortMaxMonths = Math.max(...cohorts.map((c) => c.retention.length))
+export let cohortMaxMonths = Math.max(...cohorts.map((c) => c.retention.length))
 
 /** Average retention at month k across every cohort old enough to have one. */
 export function cohortAverage(monthIndex: number): { value: number; cohorts: number } {
@@ -586,8 +606,39 @@ export function cohortAverage(monthIndex: number): { value: number; cohorts: num
 }
 
 /** The cohort that decayed fastest by month 3 — usually a January intake. */
-export const worstCohort: Cohort | null = (() => {
+function buildWorstCohort(): Cohort | null {
   const eligible = cohorts.filter((c) => c.retention.length > 3)
   if (eligible.length === 0) return null
   return eligible.reduce((worst, c) => (c.retention[3] < worst.retention[3] ? c : worst))
-})()
+}
+
+export let worstCohort: Cohort | null = buildWorstCohort()
+
+/**
+ * Recompute everything on this screen from the current entity arrays.
+ * Called by lib/data/hydrate.ts after the store loads from the database and
+ * after any mutation, so the dashboard cannot show a number that was true
+ * before someone froze a membership or took a payment.
+ */
+export function rebuild(): void {
+  attentionItems = buildAttention()
+  attendance30 = sumRange(0, 30)
+  attendancePrev30 = sumRange(30, 60)
+  mrr = activeMembers.reduce((s, m) => s + m.metrics.monthlyValue, 0)
+  cancelledLast30 = countCancelledLast30()
+  churnRate = activeMembers.length > 0 ? (cancelledLast30 / activeMembers.length) * 100 : 0
+  bookedSeats = classes.reduce((s, c) => s + c.roster.length, 0)
+  totalSeats = classes.reduce((s, c) => s + c.capacity, 0)
+  fillRate = totalSeats > 0 ? (bookedSeats / totalSeats) * 100 : 0
+  outstanding = sumOutstanding()
+  kpis = buildKpis()
+  revenueByMonth = buildRevenue()
+  revenueMax = Math.max(...revenueByMonth.map((m) => m.total))
+  heatmap = hourWeekdayMatrix()
+  heatmapMax = Math.max(...heatmap.flatMap((row) => HEATMAP_HOURS.map((h) => row[h] ?? 0)))
+  heatmapPeak = buildPeak()
+  heatmapTrough = buildTrough()
+  cohorts = buildCohorts()
+  cohortMaxMonths = Math.max(...cohorts.map((c) => c.retention.length))
+  worstCohort = buildWorstCohort()
+}

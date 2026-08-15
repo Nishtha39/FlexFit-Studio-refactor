@@ -3,10 +3,12 @@
 import * as React from 'react'
 import { Sheet, ConsequenceNotice } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
-import { Field, Select, Textarea } from '@/components/ui/input'
+import { Field, Input, Select, Textarea } from '@/components/ui/input'
 import { StatusChip } from '@/components/ui/status-chip'
 import { useToast } from '@/components/ui/toast'
 import { cn } from '@/lib/utils'
+import { api } from '@/lib/api/client'
+import { useStudio } from '@/lib/store/studio-store'
 import { members } from '@/lib/data/members'
 import { money, num } from '@/lib/format'
 import type { Member } from '@/lib/types'
@@ -63,11 +65,21 @@ const SEGMENTS: Segment[] = [
   },
 ]
 
+/**
+ * Only email actually sends. SMS and push are priced and previewed here because
+ * the screen was designed around choosing between channels, but there is no SMS
+ * provider wired to this app — so they are labelled as unavailable rather than
+ * left as buttons that produce a success toast and no message. A channel that
+ * looks like it works and does not is worse than one that says it does not.
+ */
 const CHANNELS = [
-  { id: 'sms', label: 'SMS', cost: 0.35, note: 'Highest read rate. Costs per message.' },
-  { id: 'email', label: 'Email', cost: 0.02, note: 'Cheap, ignorable. Fine for newsletters.' },
-  { id: 'push', label: 'App push', cost: 0, note: 'Free, but only reaches installed apps.' },
+  { id: 'email', label: 'Email', cost: 0.02, note: 'Sends for real, through Resend.', live: true },
+  { id: 'sms', label: 'SMS (not connected)', cost: 0.35, note: 'No SMS provider is configured on this deployment.', live: false },
+  { id: 'push', label: 'App push (not connected)', cost: 0, note: 'Requires a mobile app; none is deployed.', live: false },
 ] as const
+
+/** Recipient cap per send — matches the ceiling the comms router enforces. */
+const MAX_RECIPIENTS = 200
 
 const TEMPLATES: Record<string, string> = {
   'at-risk': 'Hi {first_name} — a spot opened in Thursday 7am Strength. Want it? Reply YES and it is yours.',
@@ -82,10 +94,21 @@ const SMS_LIMIT = 160
 
 export function BroadcastComposer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { toast } = useToast()
+  const { mutate, busy, connection } = useStudio()
   const [segmentId, setSegmentId] = React.useState('at-risk')
-  const [channel, setChannel] = React.useState<(typeof CHANNELS)[number]['id']>('sms')
+  const [channel, setChannel] = React.useState<(typeof CHANNELS)[number]['id']>('email')
   const [body, setBody] = React.useState(TEMPLATES['at-risk'])
+  const [subject, setSubject] = React.useState('A note from FlexFit Studio')
   const [confirming, setConfirming] = React.useState(false)
+  const [mailConfigured, setMailConfigured] = React.useState<boolean | null>(null)
+
+  React.useEffect(() => {
+    if (!open || connection !== 'live') return
+    api.comms.emailStatus
+      .query()
+      .then((s) => setMailConfigured(s.configured))
+      .catch(() => setMailConfigured(null))
+  }, [open, connection])
 
   const segment = SEGMENTS.find((s) => s.id === segmentId) as Segment
   const audience = React.useMemo(() => members.filter(segment.match), [segment])
@@ -103,14 +126,47 @@ export function BroadcastComposer({ open, onClose }: { open: boolean; onClose: (
     setConfirming(false)
   }
 
-  const send = () => {
-    onClose()
-    setConfirming(false)
-    toast({
-      tone: 'good',
-      title: `Broadcast queued to ${num(reach)} members`,
-      detail: `${channelMeta.label} · ${money(cost)} · ${optedOut} opted-out members excluded.`,
-    })
+  // {first_name} is substituted per member, so the fan-out happens here rather
+  // than sending one identical body to everyone.
+  const recipients = React.useMemo(() => audience.slice(0, MAX_RECIPIENTS), [audience])
+  const truncated = audience.length > MAX_RECIPIENTS
+
+  const send = async () => {
+    if (!channelMeta.live) {
+      toast({
+        tone: 'danger',
+        title: `${channelMeta.label} is not connected`,
+        detail: 'Nothing was sent. Switch to Email, which is wired to a real provider.',
+      })
+      return
+    }
+    const result = await mutate(
+      () =>
+        api.comms.broadcast.mutate({
+          memberIds: recipients.map((m) => m.id),
+          subject: subject.trim(),
+          body: body.trim(),
+          alsoNotify: true,
+        }),
+      {
+        success: (r) => ({
+          // Both numbers, always. "Sent to 200" when six bounced is the kind of
+          // reported number this whole change set exists to stop.
+          title:
+            r.failed === 0
+              ? `Sent to ${num(r.sent)} members`
+              : `Sent to ${num(r.sent)} of ${num(r.attempted)} — ${num(r.failed)} failed`,
+          detail:
+            r.failed === 0
+              ? `Email · ${num(optedOut)} opted-out members excluded.`
+              : r.failures.map((f) => `${f.email}: ${f.reason}`).slice(0, 3).join(' · '),
+        }),
+      },
+    )
+    if (result) {
+      setConfirming(false)
+      onClose()
+    }
   }
 
   return (
@@ -124,11 +180,15 @@ export function BroadcastComposer({ open, onClose }: { open: boolean; onClose: (
             Cancel
           </Button>
           {confirming ? (
-            <Button data-autofocus variant="primary" onClick={send}>
-              Send to {num(reach)} members
+            <Button data-autofocus variant="primary" disabled={busy} onClick={send}>
+              {busy ? `Sending to ${num(recipients.length)}…` : `Send to ${num(recipients.length)} members`}
             </Button>
           ) : (
-            <Button variant="primary" disabled={body.trim().length === 0} onClick={() => setConfirming(true)}>
+            <Button
+              variant="primary"
+              disabled={body.trim().length === 0 || subject.trim().length === 0}
+              onClick={() => setConfirming(true)}
+            >
               Review send
             </Button>
           )}
@@ -176,6 +236,16 @@ export function BroadcastComposer({ open, onClose }: { open: boolean; onClose: (
           </Select>
         </Field>
 
+        {channel === 'email' ? (
+          <Field label="Subject" htmlFor="broadcast-subject">
+            <Input
+              id="broadcast-subject"
+              value={subject}
+              onChange={(e) => setSubject(e.currentTarget.value)}
+            />
+          </Field>
+        ) : null}
+
         <Field
           label="Message"
           hint={channel === 'sms' ? `${body.length}/${SMS_LIMIT}` : `${body.length} chars`}
@@ -203,11 +273,27 @@ export function BroadcastComposer({ open, onClose }: { open: boolean; onClose: (
           </div>
         </div>
 
+        {mailConfigured === false && channel === 'email' ? (
+          <ConsequenceNotice
+            tone="danger"
+            headline="Outbound email is not configured"
+            detail="No RESEND_API_KEY is bound to this Worker, so this send will refuse. Settings → Email has the setup steps."
+          />
+        ) : null}
+
+        {truncated ? (
+          <ConsequenceNotice
+            tone="warn"
+            headline={`Only the first ${num(MAX_RECIPIENTS)} of ${num(audience.length)} will be sent`}
+            detail="One send is capped so a runaway broadcast cannot spend the whole month's email allowance in a single press. Narrow the segment, or send again after this one lands."
+          />
+        ) : null}
+
         {confirming ? (
           <ConsequenceNotice
             tone="warn"
-            headline={`This sends immediately to ${num(reach)} members and cannot be recalled`}
-            detail={`${channelMeta.label} · ${money(cost)} billed to the studio · ${optedOut} opted-out members are excluded automatically. Members receiving this are not told it was a bulk message.`}
+            headline={`This sends immediately to ${num(recipients.length)} members and cannot be recalled`}
+            detail={`${channelMeta.label} · ${money(cost)} · ${optedOut} opted-out members are excluded automatically. Each member gets their own message — nobody sees another member's address.`}
           />
         ) : null}
       </div>

@@ -173,3 +173,56 @@
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
+
+/* ---------------------------------------------------------------------------
+ * Print
+ *
+ * The "Print" button on an invoice is only useful if what comes out is the
+ * invoice — not the sidebar, the top bar, the mobile tab bar and a page of
+ * buttons that cannot be pressed on paper. `window.print()` without this is the
+ * reason a print button so often feels broken even though it fired.
+ *
+ * Scrolling containers have to be released too: `main` is `overflow-y-auto`, so
+ * without `overflow: visible` the browser prints only the first screenful and
+ * silently drops the rest of the table.
+ * ------------------------------------------------------------------------- */
+@media print {
+  /* Chrome and Safari drop background colours by default; opting in keeps the
+     status chips legible rather than printing as empty outlines. */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  aside,
+  header,
+  nav,
+  [data-print='hide'] {
+    display: none !important;
+  }
+
+  main {
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  html,
+  body,
+  main > * {
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  /* Keep a table row and its heading together across a page break. */
+  tr,
+  img {
+    break-inside: avoid;
+  }
+  thead {
+    display: table-header-group;
+  }
+}

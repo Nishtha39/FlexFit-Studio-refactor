@@ -118,21 +118,30 @@ const raw: Array<Omit<Staff, "name" | "initials" | "active">> = [
   },
 ]
 
-export const staff: Staff[] = raw.map((s) => ({
+// `let` + setStaff(): ESM live bindings, so hydrating from the database or
+// toggling a trainer active reaches every screen. See lib/data/hydrate.ts.
+export let staff: Staff[] = raw.map((s) => ({
   ...s,
   name: `${s.firstName} ${s.lastName}`,
   initials: initials(s.firstName, s.lastName),
   active: s.activeTo === null,
 }))
 
-export const staffById = new Map(staff.map((s) => [s.id, s]))
+export let staffById = new Map(staff.map((s) => [s.id, s]))
 
 export function getStaff(id: string): Staff | undefined {
   return staffById.get(id)
 }
 
-export const trainers = staff.filter((s) => s.role === "trainer")
-export const activeTrainers = trainers.filter((s) => s.active)
+export let trainers = staff.filter((s) => s.role === "trainer")
+export let activeTrainers = trainers.filter((s) => s.active)
+
+export function setStaff(next: Staff[]): void {
+  staff = next
+  staffById = new Map(staff.map((s) => [s.id, s]))
+  trainers = staff.filter((s) => s.role === "trainer")
+  activeTrainers = trainers.filter((s) => s.active)
+}
 
 /** The date the departing trainer left — consumed by the attendance generator. */
 export const TRAINER_DEPARTURE_DATE = new Date("2025-03-21T00:00:00.000Z")

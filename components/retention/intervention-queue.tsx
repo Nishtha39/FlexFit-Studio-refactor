@@ -10,8 +10,21 @@ import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { RiskScore, StatusChip } from '@/components/ui/status-chip'
 import { ViewToggle } from '@/components/ui/tabs'
-import { TableWrap, Table, Thead, Tbody, Th, Tr, Td, CellStack } from '@/components/ui/table'
-import { useToast } from '@/components/ui/toast'
+import {
+  CellStack,
+  SerialTd,
+  SerialTh,
+  Table,
+  TableWrap,
+  Tbody,
+  Td,
+  Th,
+  Thead,
+  Tr,
+} from '@/components/ui/table'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
+import { stateOf } from '@/lib/data/work-items'
 import { compactMoney, money, num } from '@/lib/format'
 import { staffById } from '@/lib/data/staff'
 import {
@@ -26,12 +39,6 @@ import {
 
 type Filter = 'all' | 'mine' | 'unassigned'
 
-interface QueueState {
-  assigneeId: string | null
-  snoozedUntil: string | null
-  done: boolean
-}
-
 /** Front desk is "Marco Silveira" in the role context — st-4 in the staff set. */
 const CURRENT_STAFF_ID = assignableStaff[0]?.id ?? null
 
@@ -39,35 +46,39 @@ const CURRENT_STAFF_ID = assignableStaff[0]?.id ?? null
  * The intervention queue. Ordered by risk × value, because ordering by risk
  * alone sends staff after members who were never worth the hour. Every row
  * carries the play to run, so the queue is executable rather than informational.
+ *
+ * The rows themselves stay derived — a member appears here because their risk
+ * and value say so, recomputed every load. What is stored is only what nobody
+ * can derive: that somebody assigned it, put it off, or finished with it. Before
+ * that was a table, a reload put every completed call straight back in the queue
+ * and two staff could each ring the same member.
  */
 export function InterventionQueue({ className }: { className?: string }) {
-  const { toast } = useToast()
-  const [state, setState] = React.useState<Record<string, QueueState>>({})
+  const { mutate, connection, busy } = useStudio()
+  const version = useDataVersion()
   const [filter, setFilter] = React.useState<Filter>('all')
   const [assigning, setAssigning] = React.useState<InterventionItem | null>(null)
   const [snoozing, setSnoozing] = React.useState<InterventionItem | null>(null)
 
+  /**
+   * The stored decision for a row, falling back to the generated owner when
+   * nobody has touched it — an untouched row keeps whoever the data says owns
+   * the relationship rather than reading as unassigned.
+   */
   const resolved = React.useCallback(
-    (item: InterventionItem): QueueState =>
-      state[item.id] ?? {
-        assigneeId: item.assigneeId,
-        snoozedUntil: item.snoozedUntil,
-        done: false,
-      },
-    [state],
+    (item: InterventionItem) => stateOf(item.id, item.assigneeId),
+    // stateOf reads a module-level index that hydrate() rebuilds in place.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [version],
   )
 
-  const update = (item: InterventionItem, next: Partial<QueueState>) =>
-    setState((prev) => ({
-      ...prev,
-      [item.id]: { ...resolved(item), ...next },
-    }))
+  const isLive = (item: InterventionItem) => resolved(item).status === 'open'
 
   const active = React.useMemo(
     () =>
       interventionQueue.filter((item) => {
         const s = resolved(item)
-        if (s.done || s.snoozedUntil) return false
+        if (s.status !== 'open') return false
         if (filter === 'mine') return s.assigneeId === CURRENT_STAFF_ID
         if (filter === 'unassigned') return s.assigneeId === null
         return true
@@ -75,52 +86,85 @@ export function InterventionQueue({ className }: { className?: string }) {
     [filter, resolved],
   )
 
-  const openCount = interventionQueue.filter((i) => {
-    const s = resolved(i)
-    return !s.done && !s.snoozedUntil
-  }).length
-  const snoozedCount = interventionQueue.filter((i) => resolved(i).snoozedUntil).length
-  const doneCount = interventionQueue.filter((i) => resolved(i).done).length
-  const mineCount = interventionQueue.filter((i) => {
-    const s = resolved(i)
-    return !s.done && !s.snoozedUntil && s.assigneeId === CURRENT_STAFF_ID
-  }).length
-  const unassignedCount = interventionQueue.filter((i) => {
-    const s = resolved(i)
-    return !s.done && !s.snoozedUntil && s.assigneeId === null
-  }).length
+  const openCount = interventionQueue.filter(isLive).length
+  const snoozedCount = interventionQueue.filter((i) => resolved(i).status === 'snoozed').length
+  const doneCount = interventionQueue.filter((i) => resolved(i).status === 'done').length
+  const mineCount = interventionQueue.filter(
+    (i) => isLive(i) && resolved(i).assigneeId === CURRENT_STAFF_ID,
+  ).length
+  const unassignedCount = interventionQueue.filter(
+    (i) => isLive(i) && resolved(i).assigneeId === null,
+  ).length
+
+  /** One write for all three actions — see server/trpc/routers/queue.ts. */
+  const write = (
+    item: InterventionItem,
+    patch: { status: 'open' | 'snoozed' | 'done'; assigneeId?: string | null; snoozedUntil?: string | null; resolution?: string | null },
+    success: () => { title: string; detail?: string; action?: { label: string; onClick: () => void } },
+  ) => {
+    if (connection !== 'live') return
+    const s = resolved(item)
+    return mutate(
+      () =>
+        api.queue.setState.mutate({
+          id: item.id,
+          queue: 'retention',
+          status: patch.status,
+          assigneeId: patch.assigneeId !== undefined ? patch.assigneeId : s.assigneeId,
+          snoozedUntil: patch.snoozedUntil ?? null,
+          resolution: patch.resolution ?? null,
+        }),
+      { success },
+    )
+  }
+
+  /** Put a row back in the queue — the Undo behind every action here. */
+  const reopen = (item: InterventionItem, assigneeId: string | null) => {
+    void write(item, { status: 'open', assigneeId, snoozedUntil: null }, () => ({
+      title: 'Back in the queue',
+      detail: item.member.name,
+    }))
+  }
 
   const assign = (item: InterventionItem, staffId: string) => {
     const previous = resolved(item).assigneeId
-    update(item, { assigneeId: staffId })
     setAssigning(null)
-    toast({
-      tone: 'info',
+    void write(item, { status: 'open', assigneeId: staffId }, () => ({
       title: `Assigned to ${staffById.get(staffId)?.name ?? 'staff'}`,
       detail: `${item.member.name} · ${PLAYS[item.play].label}`,
-      action: { label: 'Undo', onClick: () => update(item, { assigneeId: previous }) },
-    })
+      action: {
+        label: 'Undo',
+        onClick: () => {
+          void write(item, { status: 'open', assigneeId: previous }, () => ({
+            title: previous ? `Back with ${staffById.get(previous)?.name ?? 'staff'}` : 'Unassigned again',
+          }))
+        },
+      },
+    }))
   }
 
   const snooze = (item: InterventionItem, days: number) => {
-    update(item, { snoozedUntil: snoozeDate(days) })
     setSnoozing(null)
-    toast({
-      tone: 'neutral',
+    const until = snoozeDate(days)
+    const previousAssignee = resolved(item).assigneeId
+    void write(item, { status: 'snoozed', snoozedUntil: until }, () => ({
       title: `Snoozed ${days} day${days === 1 ? '' : 's'}`,
-      detail: `${item.member.name} returns to the queue automatically.`,
-      action: { label: 'Undo', onClick: () => update(item, { snoozedUntil: null }) },
-    })
+      detail: `${item.member.name} returns to the queue on ${until}.`,
+      action: { label: 'Undo', onClick: () => reopen(item, previousAssignee) },
+    }))
   }
 
   const complete = (item: InterventionItem) => {
-    update(item, { done: true })
-    toast({
-      tone: 'good',
-      title: 'Logged as contacted',
-      detail: `${item.member.name} · ${PLAYS[item.play].label}. Outcome is measured at 60 days.`,
-      action: { label: 'Undo', onClick: () => update(item, { done: false }) },
-    })
+    const previousAssignee = resolved(item).assigneeId
+    void write(
+      item,
+      { status: 'done', resolution: PLAYS[item.play].label },
+      () => ({
+        title: 'Logged as contacted',
+        detail: `${item.member.name} · ${PLAYS[item.play].label}. Outcome is measured at 60 days.`,
+        action: { label: 'Undo', onClick: () => reopen(item, previousAssignee) },
+      }),
+    )
   }
 
   return (
@@ -163,6 +207,7 @@ export function InterventionQueue({ className }: { className?: string }) {
           <Table>
             <Thead>
               <tr>
+                <SerialTh />
                 <Th width={220}>Member</Th>
                 <Th align="right" width={72}>
                   Risk
@@ -181,12 +226,13 @@ export function InterventionQueue({ className }: { className?: string }) {
               </tr>
             </Thead>
             <Tbody>
-              {active.map((item) => {
+              {active.map((item, i) => {
                 const s = resolved(item)
                 const owner = s.assigneeId ? staffById.get(s.assigneeId) : null
                 const play = PLAYS[item.play]
                 return (
                   <Tr key={item.id}>
+                    <SerialTd index={i} />
                     <Td>
                       <CellStack
                         primary={
@@ -223,15 +269,30 @@ export function InterventionQueue({ className }: { className?: string }) {
                     </Td>
                     <Td align="right">
                       <div className="flex items-center justify-end gap-1">
-                        <Button size="xs" variant="ghost" onClick={() => setAssigning(item)}>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          disabled={connection !== 'live'}
+                          onClick={() => setAssigning(item)}
+                        >
                           <UserPlus className="size-3" />
                           Assign
                         </Button>
-                        <Button size="xs" variant="ghost" onClick={() => setSnoozing(item)}>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          disabled={connection !== 'live'}
+                          onClick={() => setSnoozing(item)}
+                        >
                           <Clock className="size-3" />
                           Snooze
                         </Button>
-                        <Button size="xs" variant="secondary" onClick={() => complete(item)}>
+                        <Button
+                          size="xs"
+                          variant="secondary"
+                          disabled={busy || connection !== 'live'}
+                          onClick={() => complete(item)}
+                        >
                           <Check className="size-3" />
                           Done
                         </Button>

@@ -13,6 +13,8 @@ import { PaymentStatus, StatusChip } from '@/components/ui/status-chip'
 import { EmptyState } from '@/components/ui/empty-state'
 import {
   CellStack,
+  SerialTd,
+  SerialTh,
   Table,
   TableWrap,
   Tbody,
@@ -22,8 +24,11 @@ import {
   Tr,
   type SortDir,
 } from '@/components/ui/table'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
+import { datedFilename, downloadCsv } from '@/lib/export'
 import { compactMoney, money, percent, shortDate } from '@/lib/format'
 import { BillingTabs } from './billing-tabs'
+import { NewInvoiceDialog } from './new-invoice-dialog'
 import { billingTotals, dunningQueue, invoices, type Invoice } from './billing-data'
 
 type StatusKey = 'all' | 'paid' | 'pending' | 'failed' | 'refunded'
@@ -38,12 +43,15 @@ const STATUS_FILTERS: { id: StatusKey; label: string }[] = [
 ]
 
 export function InvoiceList() {
+  const { connection } = useStudio()
+  const version = useDataVersion()
   const [status, setStatus] = React.useState<StatusKey>('all')
   const [query, setQuery] = React.useState('')
   const [sort, setSort] = React.useState<{ key: SortKey; dir: SortDir }>({ key: 'issued', dir: 'desc' })
+  const [newOpen, setNewOpen] = React.useState(false)
 
-  const totals = React.useMemo(() => billingTotals(), [])
-  const dunning = React.useMemo(() => dunningQueue(), [])
+  const totals = React.useMemo(() => billingTotals(), [version])
+  const dunning = React.useMemo(() => dunningQueue(), [version])
 
   const rows = React.useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -61,13 +69,36 @@ export function InvoiceList() {
       amount: (a, b) => a.amount - b.amount,
     }
     return [...out].sort((a, b) => cmp[sort.key](a, b) * dir)
-  }, [status, query, sort])
+  }, [status, query, sort, version])
 
   const toggleSort = (key: SortKey) =>
     setSort((prev) =>
       prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' },
     )
   const dirFor = (key: SortKey): SortDir => (sort.key === key ? sort.dir : null)
+
+  /**
+   * Export what is on screen, not the whole book. The filters and the sort above
+   * are the question somebody just asked; handing them a different set of rows
+   * than the ones they are looking at is how an export gets mistrusted.
+   */
+  const exportRows = () =>
+    downloadCsv(datedFilename('invoices'), rows, [
+      { header: 'S.no', value: (_r, i) => i + 1 },
+      { header: 'Invoice', value: (r) => r.id },
+      { header: 'Member', value: (r) => r.memberName },
+      { header: 'Issued', value: (r) => r.issuedDate },
+      { header: 'Due', value: (r) => r.dueDate },
+      { header: 'Status', value: (r) => r.status },
+      { header: 'Method', value: (r) => r.method },
+      { header: 'Plan', value: (r) => r.planName },
+      { header: 'Gross', value: (r) => r.amount },
+      { header: 'Tax', value: (r) => r.taxAmount },
+      { header: 'Net', value: (r) => r.netAmount },
+      { header: 'Reversed', value: (r) => r.reversed },
+      { header: 'Days overdue', value: (r) => r.overdueDays },
+      { header: 'Description', value: (r) => r.description },
+    ])
 
   return (
     <RequireScreen screen="billing">
@@ -83,11 +114,16 @@ export function InvoiceList() {
         }
         actions={
           <>
-            <Button variant="secondary" size="sm">
+            <Button variant="secondary" size="sm" onClick={exportRows}>
               <Download />
               Export
             </Button>
-            <Button variant="primary" size="sm">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={connection !== 'live'}
+              onClick={() => setNewOpen(true)}
+            >
               New invoice
             </Button>
           </>
@@ -154,6 +190,7 @@ export function InvoiceList() {
               <Table>
                 <Thead>
                   <tr>
+                    <SerialTh />
                     <Th sortable sortDir={dirFor('issued')} onSort={() => toggleSort('issued')} width={110}>
                       Issued
                     </Th>
@@ -173,8 +210,9 @@ export function InvoiceList() {
                   </tr>
                 </Thead>
                 <Tbody>
-                  {rows.map((invoice) => (
+                  {rows.map((invoice, i) => (
                     <Tr key={invoice.id}>
+                      <SerialTd index={i} />
                       <Td muted className="tnum">{shortDate(invoice.issuedDate)}</Td>
                       <Td>
                         <Link
@@ -227,6 +265,8 @@ export function InvoiceList() {
           )}
         </Card>
       </PageBody>
+
+      <NewInvoiceDialog open={newOpen} onClose={() => setNewOpen(false)} />
     </RequireScreen>
   )
 }

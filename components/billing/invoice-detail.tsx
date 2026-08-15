@@ -10,8 +10,12 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog, ConsequenceNotice } from '@/components/ui/modal'
 import { PaymentStatus, StatusChip } from '@/components/ui/status-chip'
 import { Table, TableWrap, Tbody, Td, Th, Thead, Tr } from '@/components/ui/table'
-import { useToast } from '@/components/ui/toast'
+import { Checkbox } from '@/components/ui/input'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
 import { clock, fullDate, money, shortDate } from '@/lib/format'
+import { paymentById } from '@/lib/data/payments'
+import { getMember } from '@/lib/data/members'
 import { DUNNING_LADDER, paymentsForInvoice, type Invoice } from './billing-data'
 
 /**
@@ -20,12 +24,74 @@ import { DUNNING_LADDER, paymentsForInvoice, type Invoice } from './billing-data
  * recovery action states what the member will experience before you send it.
  */
 export function InvoiceDetail({ invoice }: { invoice: Invoice }) {
-  const { toast } = useToast()
+  const { mutate, busy } = useStudio()
+  const version = useDataVersion()
   const [refundOpen, setRefundOpen] = React.useState(false)
-  const [retried, setRetried] = React.useState(false)
-  const rows = React.useMemo(() => paymentsForInvoice(invoice), [invoice])
+  const [alsoEmail, setAlsoEmail] = React.useState(false)
+  const rows = React.useMemo(() => paymentsForInvoice(invoice), [invoice, version])
   const unsettled = invoice.status === 'failed' || invoice.status === 'pending'
   const step = DUNNING_LADDER.find((s) => invoice.overdueDays >= s.onDay)
+
+  /** The row a refund reverses / a retry reattempts — an invoice is a derivation. */
+  const settled = React.useMemo(
+    () =>
+      invoice.paymentIds
+        .map((id) => paymentById.get(id))
+        .filter((p): p is NonNullable<typeof p> => Boolean(p)),
+    [invoice.paymentIds, version],
+  )
+  const refundable = settled.find((p) => p.status === 'paid' && p.reversalOf === null)
+  const lastFailure = settled
+    .filter((p) => p.status === 'failed')
+    .sort((a, b) => (a.date < b.date ? 1 : -1))[0]
+
+  async function retry() {
+    if (!lastFailure) return
+    await mutate(() => api.billing.retry.mutate({ paymentId: lastFailure.id }), {
+      success: () => ({
+        title: 'Card retry queued',
+        detail: `${invoice.memberName} will be charged ${money(invoice.amount)}. They get one SMS if it fails again.`,
+      }),
+    })
+  }
+
+  async function refund() {
+    if (!refundable) return
+    setRefundOpen(false)
+    await mutate(
+      async () => {
+        const reversal = await api.billing.refund.mutate({
+          paymentId: refundable.id,
+          reason: `Refunded from ${invoice.id}`,
+        })
+        // A credit note is a second, independent send. It is attempted after the
+        // money moves, never instead of it, so a mail failure cannot make it
+        // look like the refund did not happen.
+        if (alsoEmail) {
+          await api.comms.emailMember.mutate({
+            memberId: invoice.memberId,
+            subject: `Credit note for ${invoice.id}`,
+            body: [
+              `Hi ${getMember(invoice.memberId)?.firstName ?? invoice.memberName},`,
+              `We have refunded ${money(invoice.amount)} against ${invoice.id} (${invoice.planName}).`,
+              `It goes back to the original ${invoice.method.toUpperCase()} instrument and usually shows within 5–7 days.`,
+              'If you do not see it after a week, reply to this email and we will chase it.',
+              'FlexFit Studio',
+            ].join('\n\n'),
+          })
+        }
+        return reversal
+      },
+      {
+        success: () => ({
+          title: `Reversal row added to ${invoice.id}`,
+          detail: alsoEmail
+            ? `${money(invoice.amount)} refunded and a credit note emailed to ${invoice.memberName}.`
+            : `${money(invoice.amount)} back to the original ${invoice.method.toUpperCase()} instrument in 5–7 days.`,
+        }),
+      },
+    )
+  }
 
   return (
     <RequireScreen screen="billing">
@@ -47,30 +113,20 @@ export function InvoiceDetail({ invoice }: { invoice: Invoice }) {
         }
         actions={
           <>
-            <Button variant="secondary" size="sm">
+            {/* The print stylesheet in globals.css is what makes this useful —
+                it drops the shell and prints the invoice alone. */}
+            <Button variant="secondary" size="sm" onClick={() => window.print()}>
               <Printer />
               Print
             </Button>
-            {invoice.status === 'paid' ? (
-              <Button variant="danger" size="sm" onClick={() => setRefundOpen(true)}>
+            {invoice.status === 'paid' && refundable ? (
+              <Button variant="danger" size="sm" disabled={busy} onClick={() => setRefundOpen(true)}>
                 Refund
               </Button>
-            ) : unsettled ? (
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={retried}
-                onClick={() => {
-                  setRetried(true)
-                  toast({
-                    tone: 'info',
-                    title: 'Card retry queued',
-                    detail: `${invoice.memberName} will be charged ${money(invoice.amount)} within a minute. They get one SMS if it fails again.`,
-                  })
-                }}
-              >
+            ) : unsettled && lastFailure ? (
+              <Button variant="primary" size="sm" disabled={busy} onClick={retry}>
                 <RefreshCw />
-                {retried ? 'Retry queued' : 'Retry card'}
+                Retry card
               </Button>
             ) : null}
           </>
@@ -193,13 +249,7 @@ export function InvoiceDetail({ invoice }: { invoice: Invoice }) {
       <ConfirmDialog
         open={refundOpen}
         onClose={() => setRefundOpen(false)}
-        onConfirm={() =>
-          toast({
-            tone: 'info',
-            title: `Reversal row added to ${invoice.id}`,
-            detail: `${money(invoice.amount)} back to the original ${invoice.method.toUpperCase()} instrument in 5–7 days.`,
-          })
-        }
+        onConfirm={refund}
         title={`Refund ${money(invoice.amount)}?`}
         description={`${invoice.memberName} · ${invoice.planName}`}
         consequence={`This adds a −${money(invoice.amount)} reversal row. ${invoice.id} stays on record as paid.`}
@@ -209,10 +259,11 @@ export function InvoiceDetail({ invoice }: { invoice: Invoice }) {
           Membership access is unaffected. If you meant to end the membership instead, cancel it from
           the member profile — a refund alone leaves the plan active.
         </p>
-        <Button variant="ghost" size="sm" className="mt-1 gap-1.5">
-          <Send />
+        <label className="mt-2 flex items-center gap-2 text-sm text-foreground">
+          <Checkbox checked={alsoEmail} onChange={(e) => setAlsoEmail(e.currentTarget.checked)} />
+          <Send className="size-3.5 text-muted-foreground" aria-hidden />
           Also email the member a credit note
-        </Button>
+        </label>
       </ConfirmDialog>
     </RequireScreen>
   )

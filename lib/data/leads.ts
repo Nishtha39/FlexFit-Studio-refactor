@@ -58,9 +58,10 @@ function build(): Lead[] {
   return out
 }
 
-export const leads: Lead[] = build()
+// `let` + setLeads(): ESM live bindings. See lib/data/hydrate.ts.
+export let leads: Lead[] = build()
 
-export const leadById = new Map(leads.map((l) => [l.id, l]))
+export let leadById = new Map(leads.map((l) => [l.id, l]))
 
 export function leadsByStage(stage: LeadStage): Lead[] {
   return leads.filter((l) => l.stage === stage)
@@ -70,4 +71,9 @@ export function leadsByStage(stage: LeadStage): Lead[] {
 export function staleLeads(thresholdDays = 7): Lead[] {
   const open: LeadStage[] = ["new", "contacted", "tour-booked", "trial"]
   return leads.filter((l) => open.includes(l.stage) && l.ageDays >= thresholdDays)
+}
+
+export function setLeads(next: Lead[]): void {
+  leads = next
+  leadById = new Map(leads.map((l) => [l.id, l]))
 }

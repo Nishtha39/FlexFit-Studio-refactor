@@ -2,7 +2,8 @@ import type { Plan } from "../types"
 
 // 6 plans, including two unlimited tiers and a corporate-only pooled plan.
 // Prices are INR/month equivalents (per-visit for the drop-in).
-export const plans: Plan[] = [
+// `let` + setPlans(): ESM live bindings. See lib/data/hydrate.ts.
+export let plans: Plan[] = [
   {
     id: "plan-dropin",
     name: "Day Pass",
@@ -71,8 +72,13 @@ export const plans: Plan[] = [
   },
 ]
 
-export const planById = new Map(plans.map((p) => [p.id, p]))
+export let planById = new Map(plans.map((p) => [p.id, p]))
 
 export function getPlan(id: string): Plan | undefined {
   return planById.get(id)
+}
+
+export function setPlans(next: Plan[]): void {
+  plans = next
+  planById = new Map(plans.map((p) => [p.id, p]))
 }

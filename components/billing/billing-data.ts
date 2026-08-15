@@ -121,9 +121,9 @@ function build(): Invoice[] {
   })
 }
 
-export const invoices: Invoice[] = build()
+export let invoices: Invoice[] = build()
 
-export const invoiceById = new Map(invoices.map((i) => [i.id, i]))
+export let invoiceById = new Map(invoices.map((i) => [i.id, i]))
 
 export function getInvoice(id: string): Invoice | undefined {
   return invoiceById.get(id)
@@ -285,4 +285,16 @@ export function planImpact(draft: PlanDraft): PlanImpact {
   }
 }
 
-export const planCatalog = plans
+export let planCatalog = plans
+
+/**
+ * Re-derive the invoice view from the current ledger. An invoice has no table —
+ * it IS the set of payment rows sharing an invoiceId — so taking a payment or
+ * issuing a refund has to rebuild this or the billing screens would still be
+ * describing the ledger as it was at page load.
+ */
+export function rebuild(): void {
+  invoices = build()
+  invoiceById = new Map(invoices.map((i) => [i.id, i]))
+  planCatalog = plans
+}

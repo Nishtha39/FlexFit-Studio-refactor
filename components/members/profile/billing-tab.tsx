@@ -1,19 +1,33 @@
 'use client'
 
 import * as React from 'react'
+import Link from 'next/link'
 import { Receipt, RotateCcw, CreditCard } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { Card, CardHeader, CardBody, CardFooter, DataPoint } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { PaymentStatus, StatusChip } from '@/components/ui/status-chip'
-import { TableWrap, Table, Thead, Tbody, Th, Tr, Td } from '@/components/ui/table'
+import {
+  SerialTd,
+  SerialTh,
+  Table,
+  TableWrap,
+  Tbody,
+  Td,
+  Th,
+  Thead,
+  Tr,
+} from '@/components/ui/table'
 import { ConfirmDialog } from '@/components/ui/modal'
-import { useToast } from '@/components/ui/toast'
+import { Field, Input } from '@/components/ui/input'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
 import type { Member, Payment } from '@/lib/types'
 import { fullDate, money, num } from '@/lib/format'
 import { paymentsForMember } from '@/lib/data/payments'
 import { getPlan } from '@/lib/data/plans'
+import { TakePaymentDialog } from './member-actions'
+import { ChangePlanDialog } from './change-plan-dialog'
 
 /**
  * Billing tab. Refunds are shown as paired reversal rows — the original charge
@@ -21,10 +35,44 @@ import { getPlan } from '@/lib/data/plans'
  * whether a negative number is a correction or a second transaction.
  */
 export function BillingTab({ member }: { member: Member }) {
-  const { toast } = useToast()
+  const { mutate, connection, busy } = useStudio()
+  const version = useDataVersion()
   const [refunding, setRefunding] = React.useState<Payment | null>(null)
-  const rows = React.useMemo(() => paymentsForMember(member.id), [member.id])
+  const [reason, setReason] = React.useState('')
+  const [takePaymentOpen, setTakePaymentOpen] = React.useState(false)
+  const [changePlanOpen, setChangePlanOpen] = React.useState(false)
+  const rows = React.useMemo(() => paymentsForMember(member.id), [member.id, version])
   const plan = getPlan(member.planId)
+
+  React.useEffect(() => {
+    if (refunding) setReason('')
+  }, [refunding])
+
+  const refund = (p: Payment) => {
+    if (connection !== 'live') return
+    void mutate(
+      () => api.billing.refund.mutate({ paymentId: p.id, reason: reason.trim() || 'Refunded at the desk' }),
+      {
+        success: (reversal) => ({
+          title: 'Refund issued',
+          detail: `${money(Math.abs(reversal.amount))} reversed on ${p.invoiceId}.`,
+        }),
+      },
+    ).then(() => setRefunding(null))
+  }
+
+  const retry = (p: Payment) => {
+    if (connection !== 'live') return
+    void mutate(() => api.billing.retry.mutate({ paymentId: p.id }), {
+      success: (r) => ({
+        title: r.status === 'paid' ? 'Payment collected' : 'Retry declined again',
+        detail:
+          r.status === 'paid'
+            ? `${money(r.amount)} taken on ${p.invoiceId}.`
+            : `${p.invoiceId} failed again — the failure stays on the ledger and the dunning ladder advances.`,
+      }),
+    })
+  }
 
   const collected = rows
     .filter((p) => p.status === 'paid' || p.status === 'refunded')
@@ -48,7 +96,12 @@ export function BillingTab({ member }: { member: Member }) {
             title="Payment history"
             description={`${num(primaryRows.length)} transactions on record`}
             actions={
-              <Button variant="secondary" size="sm">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={connection !== 'live'}
+                onClick={() => setTakePaymentOpen(true)}
+              >
                 <CreditCard className="size-3.5" />
                 Take payment
               </Button>
@@ -67,6 +120,7 @@ export function BillingTab({ member }: { member: Member }) {
               <Table>
                 <Thead>
                   <Tr className="bg-subtle hover:bg-subtle">
+                    <SerialTh />
                     <Th>Invoice</Th>
                     <Th>Date</Th>
                     <Th>Method</Th>
@@ -78,11 +132,12 @@ export function BillingTab({ member }: { member: Member }) {
                   </Tr>
                 </Thead>
                 <Tbody>
-                  {primaryRows.map((p) => {
+                  {primaryRows.map((p, i) => {
                     const reversal = reversalByOriginal.get(p.id)
                     return (
                       <React.Fragment key={p.id}>
                         <Tr>
+                          <SerialTd index={i} />
                           <Td className="font-mono text-micro">{p.invoiceId}</Td>
                           <Td muted>{fullDate(p.date)}</Td>
                           <Td className="uppercase">{p.method}</Td>
@@ -93,10 +148,11 @@ export function BillingTab({ member }: { member: Member }) {
                             {money(p.amount, { paise: true })}
                           </Td>
                           <Td className="pl-0">
-                            {p.status === 'paid' ? (
+                            {p.status === 'paid' && !reversal ? (
                               <Button
                                 variant="ghost"
                                 size="xs"
+                                disabled={connection !== 'live'}
                                 className="opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
                                 onClick={() => setRefunding(p)}
                               >
@@ -104,7 +160,12 @@ export function BillingTab({ member }: { member: Member }) {
                                 Refund
                               </Button>
                             ) : p.status === 'failed' ? (
-                              <Button variant="ghost" size="xs">
+                              <Button
+                                variant="ghost"
+                                size="xs"
+                                disabled={busy || connection !== 'live'}
+                                onClick={() => retry(p)}
+                              >
                                 Retry
                               </Button>
                             ) : null}
@@ -112,6 +173,11 @@ export function BillingTab({ member }: { member: Member }) {
                         </Tr>
                         {reversal ? (
                           <Tr className="bg-subtle hover:bg-subtle">
+                            {/* No serial: a reversal belongs to the row above it
+                                rather than being its own numbered line, and the
+                                ↳ already says so. The cell still has to exist or
+                                every column after it shifts left. */}
+                            <Td aria-hidden />
                             <Td className="pl-6 font-mono text-micro text-muted-foreground">
                               ↳ {reversal.invoiceId}
                             </Td>
@@ -198,12 +264,24 @@ export function BillingTab({ member }: { member: Member }) {
               </dl>
             </CardBody>
             <CardFooter>
-              <Button variant="secondary" size="xs">
+              <Button
+                variant="secondary"
+                size="xs"
+                disabled={connection !== 'live'}
+                onClick={() => setChangePlanOpen(true)}
+              >
                 Change plan
               </Button>
-              <Button variant="ghost" size="xs">
-                Billing history
-              </Button>
+              {/* The full billing history is this tab's own table — a second
+                  "Billing history" button that scrolls to what is already on
+                  screen is noise, so it opens the ledger filtered to them, where
+                  the export and the method breakdown live. */}
+              <Link
+                href={`/payments?q=${encodeURIComponent(member.name)}`}
+                className={buttonVariants({ variant: 'ghost', size: 'xs' })}
+              >
+                Open in ledger
+              </Link>
             </CardFooter>
           </Card>
         </div>
@@ -212,24 +290,43 @@ export function BillingTab({ member }: { member: Member }) {
       <ConfirmDialog
         open={refunding !== null}
         onClose={() => setRefunding(null)}
-        onConfirm={() =>
-          toast({
-            tone: 'info',
-            title: 'Refund issued',
-            detail: `${money(refunding?.amount ?? 0)} reversed on ${refunding?.invoiceId}`,
-          })
-        }
+        onConfirm={() => refunding && refund(refunding)}
         title="Issue refund"
         confirmLabel={`Refund ${money(refunding?.amount ?? 0)}`}
         consequenceTone="danger"
         consequence={`${money(refunding?.amount ?? 0, { paise: true })} will be returned to the original ${refunding?.method.toUpperCase()} method. This cannot be undone from here.`}
       >
-        <p className="text-sm leading-relaxed text-muted-foreground">
-          The original charge stays on the ledger. A paired reversal row is added referencing{' '}
-          <span className="font-mono text-foreground">{refunding?.invoiceId}</span>, so the account
-          history remains auditable.
-        </p>
+        <div className="flex flex-col gap-3">
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            The original charge stays on the ledger. A paired reversal row is added referencing{' '}
+            <span className="font-mono text-foreground">{refunding?.invoiceId}</span>, so the account
+            history remains auditable.
+          </p>
+          <Field
+            label="Reason"
+            htmlFor="refund-reason"
+            help="Stored on the reversal row — this is what an audit reads six months from now."
+          >
+            <Input
+              id="refund-reason"
+              value={reason}
+              onChange={(e) => setReason(e.currentTarget.value)}
+              placeholder="Refunded at the desk"
+            />
+          </Field>
+        </div>
       </ConfirmDialog>
+
+      <TakePaymentDialog
+        open={takePaymentOpen}
+        onClose={() => setTakePaymentOpen(false)}
+        member={member}
+      />
+      <ChangePlanDialog
+        open={changePlanOpen}
+        onClose={() => setChangePlanOpen(false)}
+        member={member}
+      />
     </div>
   )
 }

@@ -46,9 +46,13 @@ export function loadFor(trainer: Staff): TrainerLoad {
   }
 }
 
-export const trainerLoads: TrainerLoad[] = trainers
-  .map(loadFor)
-  .sort((a, b) => Number(b.trainer.active) - Number(a.trainer.active) || b.fillRate - a.fillRate)
+function buildLoads(): TrainerLoad[] {
+  return trainers
+    .map(loadFor)
+    .sort((a, b) => Number(b.trainer.active) - Number(a.trainer.active) || b.fillRate - a.fillRate)
+}
+
+export let trainerLoads: TrainerLoad[] = buildLoads()
 
 export function getTrainerLoad(id: string): TrainerLoad | undefined {
   const trainer = staff.find((s) => s.id === id && s.role === 'trainer')
@@ -65,7 +69,18 @@ export function weeklySlots(load: TrainerLoad): { day: string; index: number; sl
 }
 
 /** The departed trainer is kept on the roster — their classes had to be covered. */
-export const departedTrainers = trainers.filter((t) => !t.active)
+export let departedTrainers = trainers.filter((t) => !t.active)
+
+/**
+ * Recompute every trainer's load. Called after the active toggle writes to the
+ * database, so the roster header ("N active"), the KPI tiles and the seat-fill
+ * denominator all move in the same tick — they are all derived from the same
+ * `active` flag and would otherwise disagree with the chip in the row.
+ */
+export function rebuild(): void {
+  trainerLoads = buildLoads()
+  departedTrainers = trainers.filter((t) => !t.active)
+}
 
 export interface PayrollLine {
   label: string

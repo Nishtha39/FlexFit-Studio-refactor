@@ -9,27 +9,34 @@ import { Button } from '@/components/ui/button'
 import { StatusChip } from '@/components/ui/status-chip'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ConfirmDialog } from '@/components/ui/modal'
-import { useToast } from '@/components/ui/toast'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
 import type { GymClass, Member } from '@/lib/types'
 import { WEEKDAY_LABELS_FULL } from '@/lib/seed'
 import { num } from '@/lib/format'
 import { getStaff } from '@/lib/data/staff'
+import { memberById } from '@/lib/data/members'
 import { classes } from '@/lib/data/classes'
 import { programsFor, type ProgramEntry } from './profile-data'
+import { AssignTrainerDialog } from './assign-trainer-dialog'
 
 /**
  * Programs tab. What this member is actually booked into, week by week, plus the
- * personal-training relationship. Cancellation here is deliberately a stub that
- * states the policy — Batch 6 owns the booking / cancellation dialog family and
- * this screen must not fork it.
+ * personal-training relationship.
+ *
+ * A booking belongs to the class, not to this screen, so removing one calls the
+ * same `booking.cancel` the schedule and the member portal call — which is what
+ * promotes the next person off the waitlist. This used to hide the row in local
+ * state instead, so the seat was never released and the person waiting for it
+ * never heard anything.
  */
 export function ProgramsTab({ member }: { member: Member }) {
-  const { toast } = useToast()
+  const { mutate, connection, busy } = useStudio()
+  const version = useDataVersion()
   const [dropping, setDropping] = React.useState<ProgramEntry | null>(null)
-  const [removed, setRemoved] = React.useState<string[]>([])
+  const [assignOpen, setAssignOpen] = React.useState(false)
 
-  const all = React.useMemo(() => programsFor(member), [member])
-  const entries = all.filter((e) => !removed.includes(e.gymClass.id))
+  const entries = React.useMemo(() => programsFor(member), [member, version])
 
   const booked = entries.filter((e) => e.waitlistPosition === null)
   const waitlisted = entries.filter((e) => e.waitlistPosition !== null)
@@ -59,7 +66,45 @@ export function ProgramsTab({ member }: { member: Member }) {
           c.location === member.homeLocation,
       )
       .slice(0, 3)
-  }, [trainer, entries, member.homeLocation])
+  }, [trainer, entries, member.homeLocation, version])
+
+  /**
+   * Give up the place. The server promotes the head of the waitlist and
+   * renumbers the queue, so the toast reports who actually got the seat rather
+   * than claiming the class simply has room again.
+   */
+  const drop = (entry: ProgramEntry) => {
+    if (connection !== 'live') return
+    const wasWaitlisted = entry.waitlistPosition !== null
+    void mutate(
+      () => api.booking.cancel.mutate({ classId: entry.gymClass.id, memberId: member.id }),
+      {
+        success: (r) => {
+          const promoted = r.promoted ? memberById.get(r.promoted)?.name : null
+          return {
+            title: wasWaitlisted ? 'Removed from the waitlist' : 'Removed from the roster',
+            detail: r.promoted
+              ? `${entry.gymClass.name} · ${promoted ?? 'the next person on the waitlist'} took the spot.`
+              : `${entry.gymClass.name} · ${WEEKDAY_LABELS_FULL[entry.gymClass.dayOfWeek]} ${entry.gymClass.startTime}.`,
+          }
+        },
+      },
+    ).then(() => setDropping(null))
+  }
+
+  /** Book a suggested slot straight from here rather than sending them away. */
+  const book = (c: GymClass) => {
+    if (connection !== 'live') return
+    void mutate(() => api.booking.book.mutate({ classId: c.id, memberId: member.id }), {
+      success: (r) => ({
+        title: r.kind === 'roster' ? `Booked into ${c.name}` : `Waitlisted for ${c.name}`,
+        detail:
+          r.kind === 'roster'
+            ? `${WEEKDAY_LABELS_FULL[c.dayOfWeek]} ${c.startTime}, every week.`
+            : `Position ${r.position + 1} — somebody took the last spot first.`,
+      }),
+    })
+  }
 
   return (
     <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -69,7 +114,10 @@ export function ProgramsTab({ member }: { member: Member }) {
             icon={CalendarDays}
             title="Not booked into any classes"
             description="Floor-only members churn measurably faster than members with a recurring class slot. Book one recurring class in their usual window."
-            action={{ label: 'Open the schedule', onClick: () => {} }}
+            // Booking starts from the class, not the member — you pick the slot
+            // that has room and then say who takes it — so this goes to the
+            // schedule rather than opening a dialog that has nothing to book.
+            action={{ label: 'Open the schedule', href: '/schedule' }}
           />
         ) : (
           byDay.map(([day, list]) => (
@@ -83,6 +131,7 @@ export function ProgramsTab({ member }: { member: Member }) {
                   <ProgramRow
                     key={entry.gymClass.id}
                     entry={entry}
+                    disabled={connection !== 'live'}
                     onDrop={() => setDropping(entry)}
                   />
                 ))}
@@ -165,7 +214,12 @@ export function ProgramsTab({ member }: { member: Member }) {
               </CardBody>
               <CardFooter>
                 <span>{trainer.email}</span>
-                <Button variant="ghost" size="xs">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={connection !== 'live'}
+                  onClick={() => setAssignOpen(true)}
+                >
                   Reassign
                 </Button>
               </CardFooter>
@@ -176,7 +230,13 @@ export function ProgramsTab({ member }: { member: Member }) {
                 No trainer owns this relationship. Nobody is accountable for noticing when they stop
                 coming.
               </p>
-              <Button variant="secondary" size="sm" className="mt-2.5">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="mt-2.5"
+                disabled={connection !== 'live'}
+                onClick={() => setAssignOpen(true)}
+              >
                 <Dumbbell className="size-3.5" />
                 Assign a trainer
               </Button>
@@ -200,14 +260,24 @@ export function ProgramsTab({ member }: { member: Member }) {
                       · {WEEKDAY_LABELS_FULL[c.dayOfWeek].slice(0, 3)} {c.startTime}
                     </span>
                   </span>
-                  <span className="shrink-0 text-micro text-muted-foreground tnum">
-                    {c.capacity - c.roster.length} free
+                  <span className="flex shrink-0 items-center gap-2">
+                    <span className="text-micro text-muted-foreground tnum">
+                      {c.capacity - c.roster.length} free
+                    </span>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      disabled={busy || connection !== 'live'}
+                      onClick={() => book(c)}
+                    >
+                      Book
+                    </Button>
                   </span>
                 </li>
               ))}
             </ul>
             <CardFooter>
-              <span>Booking happens on the schedule so capacity stays authoritative</span>
+              <span>Booking here takes a recurring spot — one week only is a schedule change</span>
               <Link
                 href="/schedule"
                 className="inline-flex items-center gap-1 font-medium text-primary underline-offset-2 hover:underline"
@@ -223,23 +293,8 @@ export function ProgramsTab({ member }: { member: Member }) {
       <ConfirmDialog
         open={dropping !== null}
         onClose={() => setDropping(null)}
-        onConfirm={() => {
-          if (!dropping) return
-          const id = dropping.gymClass.id
-          setRemoved((prev) => [...prev, id])
-          toast({
-            tone: 'warn',
-            title:
-              dropping.waitlistPosition === null
-                ? 'Removed from the roster'
-                : 'Removed from the waitlist',
-            detail: `${dropping.gymClass.name} · ${WEEKDAY_LABELS_FULL[dropping.gymClass.dayOfWeek]} ${dropping.gymClass.startTime}`,
-            action: {
-              label: 'Undo',
-              onClick: () => setRemoved((prev) => prev.filter((x) => x !== id)),
-            },
-          })
-        }}
+        onConfirm={() => dropping && drop(dropping)}
+        confirmDisabled={busy || connection !== 'live'}
         title={
           dropping?.waitlistPosition === null
             ? `Remove from ${dropping?.gymClass.name}`
@@ -258,11 +313,21 @@ export function ProgramsTab({ member }: { member: Member }) {
           changes are made on the schedule.
         </p>
       </ConfirmDialog>
+
+      <AssignTrainerDialog open={assignOpen} onClose={() => setAssignOpen(false)} member={member} />
     </div>
   )
 }
 
-function ProgramRow({ entry, onDrop }: { entry: ProgramEntry; onDrop: () => void }) {
+function ProgramRow({
+  entry,
+  onDrop,
+  disabled,
+}: {
+  entry: ProgramEntry
+  onDrop: () => void
+  disabled: boolean
+}) {
   const { gymClass: c, waitlistPosition } = entry
   const trainer = getStaff(c.trainerId)
   const full = c.roster.length >= c.capacity
@@ -301,7 +366,7 @@ function ProgramRow({ entry, onDrop }: { entry: ProgramEntry; onDrop: () => void
         </span>
       </span>
 
-      <Button variant="ghost" size="xs" onClick={onDrop}>
+      <Button variant="ghost" size="xs" disabled={disabled} onClick={onDrop}>
         {waitlistPosition ? 'Leave' : 'Remove'}
       </Button>
     </li>

@@ -88,6 +88,13 @@ function build(): AppNotification[] {
   return out
 }
 
-export const notifications: AppNotification[] = build()
+// `let` + setNotifications(): ESM live bindings, so marking one read updates the
+// badge everywhere. See lib/data/hydrate.ts.
+export let notifications: AppNotification[] = build()
 
-export const unreadCount = notifications.filter((n) => !n.read).length
+export let unreadCount = notifications.filter((n) => !n.read).length
+
+export function setNotifications(next: AppNotification[]): void {
+  notifications = next
+  unreadCount = notifications.filter((n) => !n.read).length
+}

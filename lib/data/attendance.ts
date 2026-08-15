@@ -5,6 +5,15 @@ import { TRAINER_DEPARTURE_DATE } from "./staff"
 
 const rng = makeRng(0xa77e11)
 
+/**
+ * `buildDaily` has its OWN stream. It now runs after `buildCheckIns` (it counts
+ * the events), and sharing `rng` would have shifted every draw the check-in
+ * generator makes — regenerating 37,000 rows with different ids for a change
+ * that only concerns the daily totals, and forcing a needless re-seed of the
+ * biggest table in the database. Separate streams keep check_ins byte-identical.
+ */
+const dailyRng = makeRng(0xda11ea)
+
 // Relative demand by weekday (0 = Sun ... 6 = Sat). Weekday mornings/evenings
 // carry the gym; weekends are lighter.
 const WEEKDAY_FACTOR = [0.62, 1.08, 1.12, 1.1, 1.08, 0.9, 0.66]
@@ -46,22 +55,73 @@ function seasonalFactor(date: Date): number {
 // ---------------------------------------------------------------------------
 // Daily gym-wide attendance for the trailing 18 months.
 // ---------------------------------------------------------------------------
+/**
+ * THIS USED TO BE AN INDEPENDENT SERIES, AND THAT WAS A REAL BUG.
+ *
+ * `dailyAttendance` and `checkIns` were generated from two unrelated models —
+ * a ~210-visits-a-day gym-wide curve here, and per-member events below. They
+ * were never reconciled, so they disagreed by a factor of 1.79: the dashboard's
+ * "Visits · 30 days" tile read **4,721** off this series while the attendance
+ * heatmap directly beneath it was built from **2,703** actual check-in rows.
+ * Two numbers, same screen, same claimed fact.
+ *
+ * Now the recent window is COUNTED from `checkIns` rather than modelled, so the
+ * KPI, the heatmap, the member profiles and the reports all reconcile to the
+ * same rows. Found by scripts/verify-numbers.mjs, which still asserts it.
+ *
+ * The older tail has no check-in rows to count — `buildCheckIns` only goes back
+ * 364 days — so those months stay modelled. They are scaled to meet the counted
+ * part at the seam, so the 18-month trend chart has no cliff where the two
+ * methods join, and they are only ever read as a shape (the trend line), never
+ * summed against the ledger.
+ */
+const CHECKIN_HORIZON_DAYS = 364
+
 function buildDaily(): DailyAttendance[] {
   const out: DailyAttendance[] = []
   const start = startOfDay(addMonths(NOW, -18))
   const end = startOfDay(NOW)
-  const BASE = 210 // typical weekday visits across all locations
+  const seam = startOfDay(addDays(NOW, -CHECKIN_HORIZON_DAYS))
+
+  // Count the real events per day for the window they cover.
+  const counted = new Map<string, number>()
+  for (const ci of checkIns) counted.set(ci.date, (counted.get(ci.date) ?? 0) + 1)
+
+  // The modelled curve, so the pre-history keeps its seasonal shape.
+  const BASE = 210
+  const modelled = (d: Date) => BASE * WEEKDAY_FACTOR[weekday(d)] * seasonalFactor(d)
+
+  // Scale factor for the pre-history: average counted vs average modelled over
+  // the first 8 weeks after the seam. Derived rather than hard-coded so the two
+  // halves stay joined if the check-in generator ever changes.
+  let countedSum = 0
+  let modelledSum = 0
+  for (let i = 0; i < 56; i++) {
+    const d = addDays(seam, i)
+    if (d.getTime() > end.getTime()) break
+    countedSum += counted.get(isoDate(d)) ?? 0
+    modelledSum += modelled(d)
+  }
+  const preHistoryScale = modelledSum > 0 ? countedSum / modelledSum : 1
 
   for (let d = new Date(start); d.getTime() <= end.getTime(); d = addDays(d, 1)) {
-    const wd = weekday(d)
-    const base = BASE * WEEKDAY_FACTOR[wd] * seasonalFactor(d)
-    const noise = rng.float(0.9, 1.1)
-    out.push({ date: isoDate(d), count: Math.round(base * noise) })
+    const date = isoDate(d)
+    if (d.getTime() >= seam.getTime()) {
+      // Counted, not modelled. A day with no visits is a real zero.
+      out.push({ date, count: counted.get(date) ?? 0 })
+    } else {
+      out.push({ date, count: Math.round(modelled(d) * preHistoryScale * dailyRng.float(0.9, 1.1)) })
+    }
   }
   return out
 }
 
-export const dailyAttendance: DailyAttendance[] = buildDaily()
+/**
+ * Declared AFTER `checkIns` — `buildDaily` counts them, so the events have to
+ * exist first. Module-level `const` is initialised in source order, so moving
+ * this line above `checkIns` would silently produce an all-zero recent window.
+ */
+export let dailyAttendance: DailyAttendance[] = []
 
 // ---------------------------------------------------------------------------
 // Per-member check-in events for the trailing 52 weeks (drives member heatmaps
@@ -130,6 +190,14 @@ function buildCheckIns(): CheckIn[] {
 }
 
 export const checkIns: CheckIn[] = buildCheckIns()
+
+// Now that the events exist, the daily series can be counted from them.
+dailyAttendance = buildDaily()
+
+/** Replaces the daily series with the database's copy (see lib/data/hydrate.ts). */
+export function setDailyAttendance(next: DailyAttendance[]): void {
+  dailyAttendance = next
+}
 
 export const checkInsByMember: Map<string, CheckIn[]> = (() => {
   const map = new Map<string, CheckIn[]>()

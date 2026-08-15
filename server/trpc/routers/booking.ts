@@ -9,7 +9,7 @@ import { z } from 'zod'
 import { and, asc, eq, sql } from 'drizzle-orm'
 import { publicProcedure, recordEvent, refuse, router } from '../init'
 import type { Db } from '../../db/client'
-import { classSeats, classes, companies, members } from '../../db/schema'
+import { classMoves, classSeats, classes, companies, members, staff } from '../../db/schema'
 import { toClass, toCompany, toMember, type SeatRow } from '../../domain/mappers'
 import { bookingRefusal, consumesCredit, nextPromotion, seatKindFor } from '../../domain/booking-rules'
 import { isoStamp, NOW } from '../../../lib/seed'
@@ -97,6 +97,147 @@ export const bookingRouter = router({
 
       void seats
       return { kind, position, classId: theClass.id, memberId: theMember.id }
+    }),
+
+  /**
+   * Reschedule a class.
+   *
+   * Recorded as a move rather than an edit to the class row, because the screen
+   * offers three scopes and only "every occurrence" is expressible as an edit.
+   * A one-off move and a this-and-later move are facts *about a date*, so they
+   * are stored as such and resolved on read — which is exactly what
+   * `schedule-engine.ts` already did with its in-memory list.
+   */
+  moveClass: publicProcedure
+    .input(
+      z.object({
+        classId: z.string().min(1),
+        scope: z.enum(['one', 'following', 'all']),
+        fromIso: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        toIso: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        toStartTime: z.string().regex(/^\d{2}:\d{2}$/),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const rows = await ctx.db.select().from(classes).where(eq(classes.id, input.classId))
+      if (!rows[0]) refuse('NOT_FOUND', 'No class with that id.')
+
+      const id = `mv-${input.classId}-${input.fromIso}-${input.toIso}-${input.toStartTime}-${input.scope}`
+      const row = {
+        id,
+        classId: input.classId,
+        scope: input.scope,
+        fromIso: input.fromIso,
+        toIso: input.toIso,
+        toStartTime: input.toStartTime,
+        createdAt: isoStamp(NOW),
+        createdBy: ctx.actor,
+      }
+
+      // Dragging the same class onto the same slot twice is one move, not two.
+      await ctx.db.insert(classMoves).values(row).onConflictDoUpdate({ target: classMoves.id, set: row })
+
+      await recordEvent(ctx, {
+        kind: 'class.moved',
+        entityType: 'class',
+        entityId: input.classId,
+        summary: `${rows[0].name} moved to ${input.toIso} ${input.toStartTime} (${input.scope})`,
+        payload: { from: input.fromIso, to: input.toIso, startTime: input.toStartTime, scope: input.scope },
+      })
+
+      return row
+    }),
+
+  /** Put a rescheduled class back where the timetable says it belongs. */
+  cancelMove: publicProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const rows = await ctx.db.select().from(classMoves).where(eq(classMoves.id, input.id))
+      if (!rows[0]) refuse('NOT_FOUND', 'That reschedule is no longer on record.')
+
+      await ctx.db.delete(classMoves).where(eq(classMoves.id, input.id))
+      await recordEvent(ctx, {
+        kind: 'class.move-reverted',
+        entityType: 'class',
+        entityId: rows[0].classId,
+        summary: `Reschedule reverted — back on the published timetable`,
+      })
+      return { id: input.id }
+    }),
+
+  /**
+   * Put a different trainer in front of a class.
+   *
+   * The check that matters is the clash: a trainer cannot teach two classes that
+   * overlap, and comparing start times alone would miss it — a 60-minute class
+   * at 18:00 collides with one at 18:30 although nothing starts at the same
+   * moment. So the comparison is a real half-open interval overlap, the same
+   * shape the equipment booking grid uses.
+   *
+   * Location is checked too. A trainer scheduled at a gym they do not work at is
+   * how a class ends up with nobody there to run it.
+   */
+  setClassTrainer: publicProcedure
+    .input(z.object({ classId: z.string().min(1), trainerId: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const [klassRows, staffRows] = await Promise.all([
+        ctx.db.select().from(classes).where(eq(classes.id, input.classId)),
+        ctx.db.select().from(staff).where(eq(staff.id, input.trainerId)),
+      ])
+      if (!klassRows[0]) refuse('NOT_FOUND', 'That class no longer exists.')
+      if (!staffRows[0]) refuse('NOT_FOUND', 'No trainer with that id.')
+
+      const klass = klassRows[0]
+      const trainer = staffRows[0]
+
+      if (!trainer.active) {
+        refuse('BAD_REQUEST', `${trainer.name} has left — a class cannot be assigned to a departed trainer.`)
+      }
+      if (klass.trainerId === input.trainerId) {
+        refuse('BAD_REQUEST', `${trainer.name} already teaches ${klass.name}.`)
+      }
+      if (!trainer.locations.includes(klass.location)) {
+        refuse('BAD_REQUEST', `${trainer.name} does not work at ${klass.location} — assign somebody based there.`)
+      }
+
+      const minutes = (hhmm: string): number => {
+        const [h, m] = hhmm.split(':').map(Number)
+        return h * 60 + m
+      }
+      const start = minutes(klass.startTime)
+      const end = start + klass.durationMin
+
+      const sameDay = await ctx.db
+        .select()
+        .from(classes)
+        .where(and(eq(classes.trainerId, input.trainerId), eq(classes.dayOfWeek, klass.dayOfWeek)))
+
+      const clash = sameDay.find((other) => {
+        if (other.id === klass.id) return false
+        const s = minutes(other.startTime)
+        return s < end && start < s + other.durationMin
+      })
+      if (clash) {
+        refuse(
+          'BAD_REQUEST',
+          `${trainer.name} already teaches ${clash.name} at ${clash.startTime}, which overlaps this class.`,
+        )
+      }
+
+      await ctx.db
+        .update(classes)
+        .set({ trainerId: input.trainerId })
+        .where(eq(classes.id, input.classId))
+
+      await recordEvent(ctx, {
+        kind: 'class.trainer-changed',
+        entityType: 'class',
+        entityId: input.classId,
+        summary: `${klass.name}: ${klass.trainerId} → ${input.trainerId}`,
+        payload: { from: klass.trainerId, to: input.trainerId },
+      })
+
+      return { classId: input.classId, trainerId: input.trainerId, name: klass.name }
     }),
 
   /**

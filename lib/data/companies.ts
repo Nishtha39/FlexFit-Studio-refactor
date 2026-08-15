@@ -3,7 +3,8 @@ import type { Company } from "../types"
 // 3 corporate credit pools. employeeMemberIds is populated by members.ts
 // (one-directional import: members -> companies) to avoid an import cycle.
 // Acme is deliberately near-exhausted to drive the burn-rate warning UI.
-export const companies: Company[] = [
+// `let` + setCompanies(): ESM live bindings. See lib/data/hydrate.ts.
+export let companies: Company[] = [
   {
     id: "co-northwind",
     name: "Northwind Analytics",
@@ -45,7 +46,7 @@ export const companies: Company[] = [
   },
 ]
 
-export const companyById = new Map(companies.map((c) => [c.id, c]))
+export let companyById = new Map(companies.map((c) => [c.id, c]))
 
 export function getCompany(id: string): Company | undefined {
   return companyById.get(id)
@@ -60,4 +61,9 @@ export function poolUtilization(c: Company): number {
 export function weeksToExhaustion(c: Company): number {
   const remaining = Math.max(0, c.poolCredits - c.creditsUsed)
   return c.burnRatePerWeek === 0 ? Infinity : remaining / c.burnRatePerWeek
+}
+
+export function setCompanies(next: Company[]): void {
+  companies = next
+  companyById = new Map(companies.map((c) => [c.id, c]))
 }

@@ -9,6 +9,9 @@ import { bookingRouter } from './booking'
 import { billingRouter } from './billing'
 import { crmRouter } from './crm'
 import { opsRouter } from './ops'
+import { equipmentRouter } from './equipment'
+import { commsRouter } from './comms'
+import { queueRouter } from './queue'
 
 export const appRouter = router({
   read: readRouter,
@@ -16,6 +19,9 @@ export const appRouter = router({
   billing: billingRouter,
   crm: crmRouter,
   ops: opsRouter,
+  equipment: equipmentRouter,
+  comms: commsRouter,
+  queue: queueRouter,
 })
 
 /** The client imports this as a type only — no server code reaches the browser. */

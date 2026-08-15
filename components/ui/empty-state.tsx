@@ -1,10 +1,16 @@
 import * as React from 'react'
+import Link from 'next/link'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 
 /**
  * Empty states are quiet: a rule, a line of type, one action.
  * No illustrations, no mascots.
+ *
+ * The action takes either an `onClick` or an `href`. The `href` form exists
+ * because most of these actions are "go and do it on the screen that owns it" —
+ * book a class, open the schedule — and without it those callers were passing
+ * `onClick: () => {}`, which renders a button that looks live and does nothing.
  */
 export function EmptyState({
   title,
@@ -15,7 +21,7 @@ export function EmptyState({
 }: {
   title: string
   description?: string
-  action?: { label: string; onClick?: () => void }
+  action?: { label: string; onClick?: () => void; href?: string }
   icon?: React.ComponentType<{ className?: string }>
   className?: string
 }) {
@@ -32,7 +38,14 @@ export function EmptyState({
       {description ? (
         <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">{description}</p>
       ) : null}
-      {action ? (
+      {action?.href ? (
+        <Link
+          href={action.href}
+          className={cn(buttonVariants({ size: 'sm', variant: 'secondary' }), 'mt-1')}
+        >
+          {action.label}
+        </Link>
+      ) : action ? (
         <Button size="sm" variant="secondary" className="mt-1" onClick={action.onClick}>
           {action.label}
         </Button>

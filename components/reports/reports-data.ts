@@ -508,8 +508,19 @@ export function getReport(slug: string): ReportDef | undefined {
 
 export const REPORT_CATEGORIES: ReportCategory[] = ['Revenue', 'Members', 'Operations', 'Sales']
 
-/** Staff who can be scheduled a report by email. */
-export const reportRecipients = staff.filter((s) => s.active && (s.role === 'owner' || s.role === 'manager'))
+/**
+ * Staff who can be scheduled a report by email.
+ *
+ * `let` + rebuild(): this is derived from `active`, and the trainers screen can
+ * now toggle that. REPORTS itself needs no rebuild — every report defines its
+ * numbers inside `run()`, so each one re-derives from the current entities the
+ * moment it is opened.
+ */
+export let reportRecipients = staff.filter((s) => s.active && (s.role === 'owner' || s.role === 'manager'))
+
+export function rebuild(): void {
+  reportRecipients = staff.filter((s) => s.active && (s.role === 'owner' || s.role === 'manager'))
+}
 
 export function planNameFor(id: string): string {
   return getPlan(id)?.name ?? 'Membership'

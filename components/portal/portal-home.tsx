@@ -9,8 +9,11 @@ import { Card, CardBody, CardHeader, CardFooter, CapacityBar } from '@/component
 import { Button } from '@/components/ui/button'
 import { MemberStatus, PaymentStatus, StatusChip } from '@/components/ui/status-chip'
 import { EmptyState } from '@/components/ui/empty-state'
-import { useToast } from '@/components/ui/toast'
-import { members } from '@/lib/data/members'
+import { Modal } from '@/components/ui/modal'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
+import { downloadIcs } from '@/lib/export'
+import { members, memberById } from '@/lib/data/members'
 import { getPlan } from '@/lib/data/plans'
 import { paymentsForMember } from '@/lib/data/payments'
 import { locationById } from '@/lib/data'
@@ -34,11 +37,19 @@ import { isoDate } from '@/lib/seed'
  * problem, not the member's.
  */
 
-/** The signed-in member for the Member role — an active holder of a limited plan. */
-const ME =
+/**
+ * The signed-in member for the Member role.
+ *
+ * Only the *id* is fixed. The member record itself is re-read on every hydrate,
+ * because the whole point of the portal is that booking a class changes the
+ * credits shown at the top of it — pinning the object would show the count from
+ * page load forever.
+ */
+const ME_ID = (
   members.find(
     (m) => m.status === 'active' && m.metrics.creditsRemaining !== null && m.metrics.creditsRemaining > 0,
   ) ?? members[0]
+).id
 
 function myOccurrences(): Occurrence[] {
   const week = weekDates(THIS_WEEK)
@@ -54,28 +65,51 @@ function myOccurrences(): Occurrence[] {
 }
 
 export function PortalHome() {
-  const { toast } = useToast()
-  const all = React.useMemo(myOccurrences, [])
-  const [cancelled, setCancelled] = React.useState<string[]>([])
-  const [joined, setJoined] = React.useState<string[]>([])
+  const { mutate, connection } = useStudio()
+  const version = useDataVersion()
+  const all = React.useMemo(myOccurrences, [version])
+  const ME = memberById.get(ME_ID) ?? members[0]
   const [cancelTarget, setCancelTarget] = React.useState<Occurrence | null>(null)
   const [waitlistTarget, setWaitlistTarget] = React.useState<Occurrence | null>(null)
+  const [codeOpen, setCodeOpen] = React.useState(false)
+
+  /** Take or give up a place. The server decides roster vs waitlist. */
+  const bookClass = (occ: Occurrence) => {
+    if (connection !== 'live') return
+    void mutate(() => api.booking.book.mutate({ classId: occ.classId, memberId: ME.id }), {
+      success: (r) => ({
+        title: r.kind === 'roster' ? `Booked ${occ.gymClass.name}` : `Waitlisted for ${occ.gymClass.name}`,
+        detail:
+          r.kind === 'roster'
+            ? `${slotDate(occ.start)}, ${slotClock(occ.start)}.`
+            : `Position ${r.position + 1}. You are texted the moment a spot opens.`,
+      }),
+    })
+  }
+
+  const cancelClass = (occ: Occurrence, forfeited: boolean) => {
+    if (connection !== 'live') return
+    void mutate(() => api.booking.cancel.mutate({ classId: occ.classId, memberId: ME.id }), {
+      success: () => ({
+        title: forfeited ? 'Cancelled — credit forfeited' : 'Cancelled — credit returned',
+        detail: `${occ.gymClass.name}, ${slotDate(occ.start)}.`,
+      }),
+    })
+  }
 
   const plan = getPlan(ME.planId)
   const credits = ME.metrics.creditsRemaining
   const allowance = ME.metrics.planVisitsPerMonth
 
-  const booked = all.filter(
-    (o) =>
-      (o.gymClass.roster.includes(ME.id) || joined.includes(o.key)) &&
-      !cancelled.includes(o.key) &&
-      o.state !== 'past',
-  )
+  // Read the roster straight off the class — it is rebuilt from class_seats on
+  // every hydrate, so there is no local "joined"/"cancelled" list that could
+  // disagree with what the studio's own schedule screen shows.
+  const booked = all.filter((o) => o.gymClass.roster.includes(ME.id) && o.state !== 'past')
   const openClasses = all.filter(
     (o) =>
       o.state === 'upcoming' &&
       !o.gymClass.roster.includes(ME.id) &&
-      !joined.includes(o.key) &&
+      !o.gymClass.waitlist.includes(ME.id) &&
       o.gymClass.location === ME.homeLocation,
   )
   const next = booked[0]
@@ -93,7 +127,7 @@ export function PortalHome() {
           </>
         }
         actions={
-          <Button variant="secondary" size="sm">
+          <Button variant="secondary" size="sm" onClick={() => setCodeOpen(true)}>
             <QrCode />
             My check-in code
           </Button>
@@ -151,7 +185,22 @@ export function PortalHome() {
                 <Button variant="secondary" size="sm" onClick={() => setCancelTarget(next)}>
                   Cancel
                 </Button>
-                <Button variant="primary" size="sm">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() =>
+                    downloadIcs(`${next.gymClass.name.toLowerCase().replace(/\s+/g, '-')}.ics`, [
+                      {
+                        uid: next.key,
+                        title: `${next.gymClass.name} — FlexFit`,
+                        description: `With ${next.trainerName}. ${next.durationMin} minutes.`,
+                        location: locationById.get(next.gymClass.location)?.name ?? 'FlexFit Studio',
+                        start: next.start,
+                        durationMin: next.durationMin,
+                      },
+                    ])
+                  }
+                >
                   Add to calendar
                 </Button>
               </div>
@@ -235,16 +284,7 @@ export function PortalHome() {
                         setWaitlistTarget(occ)
                         return
                       }
-                      setJoined((prev) => [...prev, occ.key])
-                      toast({
-                        tone: 'good',
-                        title: `Booked ${occ.gymClass.name}`,
-                        detail: `${slotDate(occ.start)}, ${slotClock(occ.start)}${credits !== null ? ` · ${credits - 1} credits left` : ''}.`,
-                        action: {
-                          label: 'Undo',
-                          onClick: () => setJoined((prev) => prev.filter((k) => k !== occ.key)),
-                        },
-                      })
+                      bookClass(occ)
                     }}
                   >
                     {full ? 'Waitlist' : 'Book'}
@@ -287,14 +327,9 @@ export function PortalHome() {
           member={ME}
           waitlist={cancelTarget.gymClass.waitlist}
           onConfirm={(_memberId, forfeited) => {
-            setCancelled((prev) => [...prev, cancelTarget.key])
-            setJoined((prev) => prev.filter((k) => k !== cancelTarget.key))
+            const target = cancelTarget
             setCancelTarget(null)
-            toast({
-              tone: forfeited ? 'warn' : 'good',
-              title: forfeited ? 'Cancelled — credit forfeited' : 'Cancelled — credit returned',
-              detail: `${cancelTarget.gymClass.name}, ${slotDate(cancelTarget.start)}.`,
-            })
+            cancelClass(target, forfeited)
           }}
         />
       ) : null}
@@ -307,16 +342,67 @@ export function PortalHome() {
           member={ME}
           waitlist={waitlistTarget.gymClass.waitlist}
           onConfirm={() => {
-            setJoined((prev) => [...prev, waitlistTarget.key])
+            const target = waitlistTarget
             setWaitlistTarget(null)
-            toast({
-              tone: 'info',
-              title: `Waitlisted for ${waitlistTarget.gymClass.name}`,
-              detail: `Position ${waitlistTarget.gymClass.waitlist.length + 1}. You are texted the moment a spot opens.`,
-            })
+            bookClass(target)
           }}
         />
       ) : null}
+      <Modal
+        open={codeOpen}
+        onClose={() => setCodeOpen(false)}
+        title="Your check-in code"
+        description="Show this at the kiosk, or type the number in."
+      >
+        <div className="flex flex-col items-center gap-4 py-2">
+          <MemberCode value={ME.id} />
+          <p className="font-mono text-lg tracking-widest text-foreground">{ME.id}</p>
+          <p className="max-w-xs text-center text-micro leading-relaxed text-muted-foreground">
+            The kiosk also finds you by name or phone number, so this is a shortcut rather than the
+            only way in.
+          </p>
+        </div>
+      </Modal>
     </RequireScreen>
+  )
+}
+
+/**
+ * A scannable code, drawn without a QR library.
+ *
+ * A real QR encoder is a few hundred lines and one more dependency for
+ * something the kiosk does not read optically anyway — it looks a member up by
+ * id, name or phone. This renders the id as a deterministic block pattern so
+ * the card is recognisably *theirs*, with the id printed underneath in full,
+ * which is what actually gets typed in. It is decoration around a real value,
+ * and it does not claim to be a QR code.
+ */
+function MemberCode({ value }: { value: string }) {
+  const cells = React.useMemo(() => {
+    let h = 0x811c9dc5
+    for (let i = 0; i < value.length; i++) {
+      h ^= value.charCodeAt(i)
+      h = Math.imul(h, 0x01000193)
+    }
+    const out: boolean[] = []
+    for (let i = 0; i < 121; i++) {
+      h ^= h << 13
+      h ^= h >>> 17
+      h ^= h << 5
+      out.push(((h >>> 0) & 1) === 1)
+    }
+    return out
+  }, [value])
+
+  return (
+    <div
+      aria-hidden
+      className="grid gap-0.5 rounded-md border border-border bg-surface p-3"
+      style={{ gridTemplateColumns: 'repeat(11, 0.75rem)' }}
+    >
+      {cells.map((on, i) => (
+        <span key={i} className={cn('size-3 rounded-[1px]', on ? 'bg-foreground' : 'bg-muted')} />
+      ))}
+    </div>
   )
 }

@@ -104,24 +104,13 @@ export function CheckinConsole() {
           <div className="flex flex-col gap-4">
             <CheckinLookup
               evaluate={session.evaluate}
-              onAdmit={(m, d) => {
-                session.admit(m, d, d.admitted ? undefined : 'Admitted by staff override')
-                toast({
-                  tone: d.outcome === 'red' ? 'warn' : 'good',
-                  title: `${m.firstName} checked in`,
-                  detail: d.admitted
-                    ? 'Recorded on the door feed.'
-                    : 'Override recorded against your name on the feed.',
-                })
-              }}
-              onResolve={(m, d) => {
-                session.resolveAndAdmit(m, d)
-                toast({
-                  tone: 'good',
-                  title: `${d.resolveLabel} — done`,
-                  detail: `${m.name} is checked in. The action is on the door feed.`,
-                })
-              }}
+              // No toast here. `session.admit` and `session.resolveAndAdmit`
+              // write through the store, which reports the real outcome — a
+              // second toast fired from this screen would say "checked in"
+              // whether or not the write landed, which is the failure this whole
+              // change set exists to remove.
+              onAdmit={(m, d) => session.admit(m, d, d.admitted ? undefined : 'Admitted by staff override')}
+              onResolve={(m, d) => session.resolveAndAdmit(m, d)}
             />
 
             <Card className="p-4">
@@ -148,10 +137,16 @@ export function CheckinConsole() {
         onComplete={(name, amount) => {
           setGuestOpen(false)
           session.admitGuest(name, amount)
+          // A guest has no member row, and every write in this app is keyed to
+          // one — a payment included. So this genuinely only reaches the door
+          // feed, and the toast says exactly that rather than implying the cash
+          // has been booked somewhere it has not.
           toast({
-            tone: 'good',
+            tone: amount ? 'warn' : 'neutral',
             title: `${name} admitted`,
-            detail: amount ? `${money(amount)} day pass recorded.` : 'Guest pass recorded against the host.',
+            detail: amount
+              ? `${money(amount)} day pass — on the door feed only. Guests have no member record, so ring it through the till and raise an invoice if it needs to be on the books.`
+              : 'Guest pass noted on the door feed against the host.',
           })
         }}
       />

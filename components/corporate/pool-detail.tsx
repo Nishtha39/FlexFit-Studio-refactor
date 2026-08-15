@@ -9,8 +9,21 @@ import { Card, CardBody, CardHeader, CardFooter, DataPoint, CapacityBar } from '
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog, ConsequenceNotice } from '@/components/ui/modal'
 import { MemberStatus, RiskScore, StatusChip } from '@/components/ui/status-chip'
-import { CellStack, Table, TableWrap, Tbody, Td, Th, Thead, Tr } from '@/components/ui/table'
-import { useToast } from '@/components/ui/toast'
+import {
+  CellStack,
+  SerialTd,
+  SerialTh,
+  Table,
+  TableWrap,
+  Tbody,
+  Td,
+  Th,
+  Thead,
+  Tr,
+} from '@/components/ui/table'
+import { ComposeEmailDialog } from '@/components/comms/compose-email-dialog'
+import { api } from '@/lib/api/client'
+import { useStudio } from '@/lib/store/studio-store'
 import { compactMoney, daysAgo, fullDate, money, num, percent, shortDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -28,13 +41,15 @@ import type { Company } from '@/lib/types'
  * projection in the same axis, so "when does this empty" is read, not computed.
  */
 export function PoolDetail({ company }: { company: Company }) {
-  const { toast } = useToast()
+  const { mutate, connection } = useStudio()
   const status = React.useMemo(() => poolStatus(company), [company])
   const history = React.useMemo(() => burnHistory(company), [company])
   const forward = React.useMemo(() => projection(status), [status])
   const usage = React.useMemo(() => employeeUsage(status), [status])
   const [topUp, setTopUp] = React.useState<number | null>(null)
+  const [emailOpen, setEmailOpen] = React.useState(false)
   const health = HEALTH_META[status.health]
+  const firstName = company.contactName.split(' ')[0]
 
   const maxCredits = Math.max(...history.map((h) => h.credits), status.company.burnRatePerWeek)
   const emptyWeek = forward.findIndex((f) => f.remaining === 0)
@@ -59,9 +74,9 @@ export function PoolDetail({ company }: { company: Company }) {
         }
         actions={
           <>
-            <Button variant="secondary" size="sm">
+            <Button variant="secondary" size="sm" onClick={() => setEmailOpen(true)}>
               <Mail />
-              Email {company.contactName.split(' ')[0]}
+              Email {firstName}
             </Button>
             <Button variant="primary" size="sm" onClick={() => setTopUp(TOP_UP_SIZES[1])}>
               <Plus />
@@ -184,6 +199,7 @@ export function PoolDetail({ company }: { company: Company }) {
             <Table>
               <Thead>
                 <tr>
+                  <SerialTh />
                   <Th>Employee</Th>
                   <Th width={130}>Status</Th>
                   <Th align="right" width={110}>Credits used</Th>
@@ -193,8 +209,9 @@ export function PoolDetail({ company }: { company: Company }) {
                 </tr>
               </Thead>
               <Tbody>
-                {usage.map(({ member, credits, lastVisit }) => (
+                {usage.map(({ member, credits, lastVisit }, i) => (
                   <Tr key={member.id}>
+                    <SerialTd index={i} />
                     <Td>
                       <CellStack
                         primary={
@@ -221,13 +238,16 @@ export function PoolDetail({ company }: { company: Company }) {
       <ConfirmDialog
         open={topUp !== null}
         onClose={() => setTopUp(null)}
-        onConfirm={() =>
-          toast({
-            tone: 'good',
-            title: `${num(topUp ?? 0)} credits added`,
-            detail: `${company.name} now has ${num(status.remaining + (topUp ?? 0))} credits — about ${(((status.remaining + (topUp ?? 0)) / company.burnRatePerWeek)).toFixed(1)} weeks at the current rate.`,
+        onConfirm={() => {
+          const credits = topUp ?? 0
+          if (connection !== 'live' || credits <= 0) return
+          void mutate(() => api.ops.topUpPool.mutate({ companyId: company.id, credits }), {
+            success: () => ({
+              title: `${num(credits)} credits added`,
+              detail: `${company.name} now has ${num(status.remaining + credits)} credits — about ${((status.remaining + credits) / company.burnRatePerWeek).toFixed(1)} weeks at the current rate.`,
+            }),
           })
-        }
+        }}
         title="Top up the credit pool"
         description={`${company.name} · ${status.planName}`}
         consequenceTone="info"
@@ -254,6 +274,35 @@ export function PoolDetail({ company }: { company: Company }) {
           </p>
         </div>
       </ConfirmDialog>
+
+      <ComposeEmailDialog
+        open={emailOpen}
+        onClose={() => setEmailOpen(false)}
+        to={company.contactEmail}
+        toName={company.contactName}
+        title={`Email ${company.contactName}`}
+        send={({ subject, body }) =>
+          api.comms.emailCompanyContact.mutate({ companyId: company.id, subject, body })
+        }
+        templates={[
+          {
+            label: status.shortfall > 0 ? 'Pool running out' : 'Usage update',
+            subject:
+              status.shortfall > 0
+                ? `${company.name} — your FlexFit credit pool is running low`
+                : `${company.name} — FlexFit usage update`,
+            body:
+              status.shortfall > 0
+                ? `Hi ${firstName},\n\n${company.name} has ${num(status.remaining)} credits left on the ${status.planName}. At the current ${num(company.burnRatePerWeek)} credits a week that runs out in about ${status.weeksLeft.toFixed(1)} weeks — ${status.weeksToRenewal.toFixed(1)} weeks before renewal on ${fullDate(company.renewalDate)}.\n\nWhen it empties, the ${num(status.employees.length)} employees on the pool stop being able to check in. Shall I add credits now and invoice as usual?\n\nThanks,\nFlexFit Studio`
+                : `Hi ${firstName},\n\nA quick update on ${company.name}'s FlexFit pool: ${num(status.remaining)} of ${num(company.poolCredits)} credits remain (${percent(status.utilization)} used), with ${num(status.activeEmployees)} of ${num(status.employees.length)} employees active in the last 30 days.\n\nRenewal is ${fullDate(company.renewalDate)}. Happy to walk through the numbers whenever suits.\n\nThanks,\nFlexFit Studio`,
+          },
+          {
+            label: 'Encourage sign-ups',
+            subject: `${company.name} — get more of your team using FlexFit`,
+            body: `Hi ${firstName},\n\n${num(status.employees.length - status.activeEmployees)} of the ${num(status.employees.length)} employees on your pool have not used a credit in the last 30 days.\n\nIf it helps, we can run an on-site intro session or send a short sign-up guide to your team. The credits are already paid for either way.\n\nThanks,\nFlexFit Studio`,
+          },
+        ]}
+      />
     </RequireScreen>
   )
 }

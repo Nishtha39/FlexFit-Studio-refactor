@@ -9,6 +9,8 @@ import { Card, CardBody, CardHeader, CapacityBar } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { RiskScore, StatusChip } from '@/components/ui/status-chip'
 import { EmptyState } from '@/components/ui/empty-state'
+import { useStudio } from '@/lib/store/studio-store'
+import { MarkAttendanceDialog, RequestCoverDialog } from './class-actions'
 import { classes } from '@/lib/data/classes'
 import { members, memberById } from '@/lib/data/members'
 import { activeTrainers } from '@/lib/data/staff'
@@ -35,7 +37,10 @@ import {
 const ME = activeTrainers[0]
 
 export function MySchedule() {
+  const { connection } = useStudio()
   const [day, setDay] = React.useState(() => isoDate(NOW))
+  const [marking, setMarking] = React.useState<Occurrence | null>(null)
+  const [covering, setCovering] = React.useState<Occurrence | null>(null)
 
   const week = React.useMemo(() => {
     const out: Occurrence[] = []
@@ -155,10 +160,20 @@ export function MySchedule() {
                     </p>
                   ) : null}
                   <div className="flex gap-2">
-                    <Button variant="secondary" size="sm">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={connection !== 'live'}
+                      onClick={() => setMarking(occ)}
+                    >
                       Mark attendance
                     </Button>
-                    <Button variant="ghost" size="sm">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={connection !== 'live'}
+                      onClick={() => setCovering(occ)}
+                    >
                       Request cover
                     </Button>
                   </div>
@@ -201,6 +216,18 @@ export function MySchedule() {
           </ul>
         </Card>
       </PageBody>
+
+      {marking ? (
+        <MarkAttendanceDialog open onClose={() => setMarking(null)} occurrence={marking} />
+      ) : null}
+      {covering ? (
+        <RequestCoverDialog
+          open
+          onClose={() => setCovering(null)}
+          occurrence={covering}
+          trainer={ME}
+        />
+      ) : null}
     </RequireScreen>
   )
 }

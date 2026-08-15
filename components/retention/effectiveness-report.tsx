@@ -5,7 +5,17 @@ import { cn } from '@/lib/utils'
 import { Card, CardHeader, CardBody, CardFooter } from '@/components/ui/card'
 import { NullResultState } from '@/components/ui/empty-state'
 import { StatusChip } from '@/components/ui/status-chip'
-import { TableWrap, Table, Thead, Tbody, Th, Tr, Td } from '@/components/ui/table'
+import {
+  SerialTd,
+  SerialTh,
+  Table,
+  TableWrap,
+  Tbody,
+  Td,
+  Th,
+  Thead,
+  Tr,
+} from '@/components/ui/table'
 import { num, percent } from '@/lib/format'
 import { EFFECTIVENESS_WINDOW_DAYS, PLAYS, effectiveness } from './retention-data'
 
@@ -39,6 +49,7 @@ export function EffectivenessReport({ className }: { className?: string }) {
         <Table>
           <Thead>
             <tr>
+              <SerialTh />
               <Th width={160}>Play</Th>
               <Th align="right" width={80}>
                 Cohort
@@ -56,8 +67,9 @@ export function EffectivenessReport({ className }: { className?: string }) {
             </tr>
           </Thead>
           <Tbody>
-            {effectiveness.map((row) => (
+            {effectiveness.map((row, i) => (
               <Tr key={row.play}>
+                <SerialTd index={i} />
                 <Td>
                   <span className="font-medium text-foreground">{PLAYS[row.play].label}</span>
                 </Td>

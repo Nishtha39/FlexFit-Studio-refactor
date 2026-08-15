@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { KioskScreen } from '@/components/kiosk/kiosk-screen'
+import { StudioProvider } from '@/lib/store/studio-store'
 
 /**
  * The kiosk lives OUTSIDE the (app) route group, so it inherits no sidebar,
@@ -21,6 +22,19 @@ export const viewport: Viewport = {
   themeColor: '#ffffff',
 }
 
+/**
+ * The kiosk gets the data store even though it has no shell: a check-in taken
+ * here is a real visit and has to reach the database, or the member's history,
+ * their remaining credits and the attendance heatmap all disagree with the door.
+ *
+ * `actor` is fixed rather than read from the role switcher — there is no role
+ * switcher out here, and the honest answer for an unattended wall display is
+ * that the kiosk did it.
+ */
 export default function KioskPage() {
-  return <KioskScreen />
+  return (
+    <StudioProvider actor="kiosk">
+      <KioskScreen />
+    </StudioProvider>
+  )
 }

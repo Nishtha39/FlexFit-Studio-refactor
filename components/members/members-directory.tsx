@@ -14,6 +14,8 @@ import { MembersSavedViews } from './members-saved-views'
 import { MembersTable } from './members-table'
 import { MembersCardList } from './members-card-list'
 import { MembersBulkBar } from './members-bulk-bar'
+import { AddMemberDialog } from './add-member-dialog'
+import { useDataVersion } from '@/lib/store/studio-store'
 import { chipStatusFor } from './member-view'
 import {
   EMPTY_FILTERS,
@@ -36,14 +38,29 @@ export function MembersDirectory() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const viewParam = searchParams.get('view')
+  // `?q=` lets another screen hand this one a search — the lead panel uses it to
+  // look for the member a won lead became.
+  const queryParam = searchParams.get('q')
 
   const [filters, setFilters] = React.useState<MemberFilters>(EMPTY_FILTERS)
   const [sortKey, setSortKey] = React.useState<SortKey>('risk')
   const [sortDir, setSortDir] = React.useState<SortDirection>('desc')
   const [selected, setSelected] = React.useState<Set<string>>(new Set())
   const [activeView, setActiveView] = React.useState<string | null>(viewParam)
+  const [addOpen, setAddOpen] = React.useState(false)
+  // `allMembers` is a live binding that `hydrate()` reassigns. Reading the
+  // version here puts this component in the render path of every write, so a
+  // member added or frozen elsewhere shows up in the list without a reload.
+  const version = useDataVersion()
 
   // A saved view arriving via the URL (sidebar link) applies its preset once.
+  const appliedQueryRef = React.useRef<string | null>(null)
+  React.useEffect(() => {
+    if (!queryParam || appliedQueryRef.current === queryParam) return
+    appliedQueryRef.current = queryParam
+    setFilters((prev) => ({ ...prev, search: queryParam }))
+  }, [queryParam])
+
   const appliedRef = React.useRef<string | null>(null)
   React.useEffect(() => {
     if (appliedRef.current === viewParam) return
@@ -59,7 +76,7 @@ export function MembersDirectory() {
     }
   }, [viewParam])
 
-  const filtered = React.useMemo(() => applyFilters(allMembers, filters), [filters])
+  const filtered = React.useMemo(() => applyFilters(allMembers, filters), [filters, version])
   const rows = React.useMemo(() => applySort(filtered, sortKey, sortDir), [filtered, sortKey, sortDir])
 
   // Counts shown inside the filter menus, computed on the unfiltered set so the
@@ -73,7 +90,7 @@ export function MembersDirectory() {
       risk[m.risk.band] = (risk[m.risk.band] ?? 0) + 1
     }
     return { status, risk }
-  }, [])
+  }, [version])
 
   const viewCounts = React.useMemo(() => {
     const out: Record<string, number> = {}
@@ -81,7 +98,7 @@ export function MembersDirectory() {
       out[view.id] = applyFilters(allMembers, { ...EMPTY_FILTERS, ...view.filters }).length
     }
     return out
-  }, [])
+  }, [version])
 
   const onSort = (key: SortKey) => {
     if (key === sortKey) {
@@ -128,7 +145,7 @@ export function MembersDirectory() {
 
   const selectedMembers = React.useMemo(
     () => allMembers.filter((m) => selected.has(m.id)),
-    [selected],
+    [selected, version],
   )
 
   const activeViewDef = savedViewById(activeView)
@@ -152,7 +169,7 @@ export function MembersDirectory() {
           </>
         }
         actions={
-          <Button variant="primary" size="sm">
+          <Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>
             <Plus className="size-3.5" />
             Add member
           </Button>
@@ -221,6 +238,7 @@ export function MembersDirectory() {
       )}
 
       <MembersBulkBar selectedMembers={selectedMembers} onClear={() => setSelected(new Set())} />
+      <AddMemberDialog open={addOpen} onClose={() => setAddOpen(false)} />
     </RequireScreen>
   )
 }

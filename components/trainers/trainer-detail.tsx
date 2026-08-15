@@ -9,18 +9,36 @@ import { Card, CardBody, CardHeader, CardFooter, DataPoint, CapacityBar } from '
 import { Button } from '@/components/ui/button'
 import { MemberStatus, RiskScore, StatusChip } from '@/components/ui/status-chip'
 import { EmptyState } from '@/components/ui/empty-state'
-import { CellStack, Table, TableWrap, Tbody, Td, Th, Thead, Tr } from '@/components/ui/table'
+import {
+  CellStack,
+  SerialTd,
+  SerialTh,
+  Table,
+  TableWrap,
+  Tbody,
+  Td,
+  Th,
+  Thead,
+  Tr,
+} from '@/components/ui/table'
+import { CallLink, ComposeEmailDialog } from '@/components/comms/compose-email-dialog'
+import { api } from '@/lib/api/client'
+import { useStudio } from '@/lib/store/studio-store'
 import { compactMoney, daysAgo, fullDate, money, num, percent } from '@/lib/format'
 import { locationById } from '@/lib/data'
 import { WEEKDAY_LABELS_FULL } from '@/lib/seed'
 import type { TrainerLoad } from './trainers-data'
 import { payroll, weeklySlots } from './trainers-data'
+import { AssignClassDialog } from './assign-class-dialog'
 
 /** One trainer: what they teach, who they are responsible for, what they cost. */
 export function TrainerDetail({ load }: { load: TrainerLoad }) {
+  const { connection } = useStudio()
   const slots = React.useMemo(() => weeklySlots(load), [load])
   const lines = React.useMemo(() => payroll(load), [load])
   const trainer = load.trainer
+  const [emailOpen, setEmailOpen] = React.useState(false)
+  const [assignOpen, setAssignOpen] = React.useState(false)
 
   return (
     <RequireScreen screen="trainers">
@@ -42,15 +60,21 @@ export function TrainerDetail({ load }: { load: TrainerLoad }) {
         }
         actions={
           <>
-            <Button variant="secondary" size="sm">
-              <Phone />
+            <CallLink phone={trainer.phone} className="h-7 px-2.5 text-sm">
+              <Phone className="size-3.5" />
               Call
-            </Button>
-            <Button variant="secondary" size="sm">
+            </CallLink>
+            <Button variant="secondary" size="sm" onClick={() => setEmailOpen(true)}>
               <Mail />
               Email
             </Button>
-            <Button variant="primary" size="sm">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!trainer.active || connection !== 'live'}
+              title={trainer.active ? undefined : `${trainer.firstName} has left — classes cannot be assigned to them.`}
+              onClick={() => setAssignOpen(true)}
+            >
               <CalendarDays />
               Assign a class
             </Button>
@@ -179,6 +203,7 @@ export function TrainerDetail({ load }: { load: TrainerLoad }) {
               <Table>
                 <Thead>
                   <tr>
+                    <SerialTh />
                     <Th>Member</Th>
                     <Th width={130}>Status</Th>
                     <Th align="right" width={110}>Visits / 30d</Th>
@@ -190,8 +215,9 @@ export function TrainerDetail({ load }: { load: TrainerLoad }) {
                 <Tbody>
                   {[...load.clients]
                     .sort((a, b) => b.risk.score - a.risk.score)
-                    .map((member) => (
+                    .map((member, i) => (
                       <Tr key={member.id}>
+                        <SerialTd index={i} />
                         <Td>
                           <CellStack
                             primary={
@@ -217,6 +243,40 @@ export function TrainerDetail({ load }: { load: TrainerLoad }) {
           )}
         </Card>
       </PageBody>
+
+      <ComposeEmailDialog
+        open={emailOpen}
+        onClose={() => setEmailOpen(false)}
+        to={trainer.email}
+        toName={trainer.name}
+        title={`Email ${trainer.name}`}
+        send={({ subject, body }) =>
+          api.comms.emailStaff.mutate({ staffId: trainer.id, subject, body })
+        }
+        templates={[
+          {
+            label: 'Cover request',
+            subject: 'Can you cover a class this week?',
+            body: `Hi ${trainer.firstName},\n\nWe need cover for a class this week and you are free in that slot. Could you take it?\n\nLet me know either way and I will confirm with the members booked in.\n\nThanks,\nFlexFit Studio`,
+          },
+          {
+            label: 'Client check-in',
+            subject: `Your clients — ${load.atRiskClients} to look at`,
+            body: `Hi ${trainer.firstName},\n\n${load.atRiskClients} of your ${load.clients.length} clients are showing high churn risk — they have stopped coming as often as they were.\n\nCould you have a look through your list this week and reach out to the ones you know best? A message from their own trainer lands very differently from one from the desk.\n\nThanks,\nFlexFit Studio`,
+          },
+          {
+            label: 'Blank',
+            subject: '',
+            body: `Hi ${trainer.firstName},\n\n\n\nFlexFit Studio`,
+          },
+        ]}
+      />
+
+      <AssignClassDialog
+        open={assignOpen}
+        onClose={() => setAssignOpen(false)}
+        trainer={trainer}
+      />
     </RequireScreen>
   )
 }

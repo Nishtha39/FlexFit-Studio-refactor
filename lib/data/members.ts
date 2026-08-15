@@ -237,12 +237,26 @@ function build(): Member[] {
   return out
 }
 
-export const members: Member[] = build()
+// `let`, not `const`: these are ESM live bindings. When the store hydrates from
+// the database (lib/data/hydrate.ts) it calls setMembers(), and every module
+// that imported `members` sees the new array with no call-site change. That is
+// what lets a freeze on one screen reach the totals on all the others.
+export let members: Member[] = build()
 
-export const memberById = new Map(members.map((m) => [m.id, m]))
+export let memberById = new Map(members.map((m) => [m.id, m]))
 
 export function getMember(id: string): Member | undefined {
   return memberById.get(id)
 }
 
-export const activeMembers = members.filter((m) => m.status === "active" || m.status === "trial" || m.status === "frozen")
+/** "On the books" — frozen members still count, they are paused not gone. */
+const isActiveMember = (m: Member) =>
+  m.status === "active" || m.status === "trial" || m.status === "frozen"
+
+export let activeMembers = members.filter(isActiveMember)
+
+export function setMembers(next: Member[]): void {
+  members = next
+  memberById = new Map(members.map((m) => [m.id, m]))
+  activeMembers = members.filter(isActiveMember)
+}

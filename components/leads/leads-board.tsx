@@ -7,8 +7,12 @@ import { RequireScreen } from '@/components/shell/app-shell'
 import { Card, KpiTile } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { AgingChip, StatusChip } from '@/components/ui/status-chip'
-import { useToast } from '@/components/ui/toast'
+import { Field, Select, Textarea } from '@/components/ui/input'
+import { Modal } from '@/components/ui/modal'
 import { cn } from '@/lib/utils'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
+import { AddLeadDialog } from './add-lead-dialog'
 import { compactMoney, money, num, percent } from '@/lib/format'
 import type { LeadStage } from '@/lib/types'
 import { LeadPanel } from './lead-panel'
@@ -22,39 +26,70 @@ import {
   type LeadCard,
 } from './leads-data'
 
+/** The reasons the loss-reason breakdown is grouped on. */
+const LOST_REASONS = [
+  'Price',
+  'Location / commute',
+  'Went to a competitor',
+  'Timing — not now',
+  'Never responded',
+  'Not a fit',
+]
+
 /**
  * Lead board. Stage is a commitment, so moving a card is a real action with a
  * consequence — dragging is the fast path, the card menu is the accessible one,
  * and both go through the same handler.
+ *
+ * The move writes to the database. It used to be `setCards` and a toast, which
+ * meant a stage change survived exactly as long as the tab did — and the
+ * pipeline value it moved was recomputed from cards nobody else could see.
  */
 export function LeadsBoard() {
-  const { toast } = useToast()
-  const [cards, setCards] = React.useState<LeadCard[]>(leadCards)
-  const [selected, setSelected] = React.useState<LeadCard | null>(null)
+  const { mutate } = useStudio()
+  const version = useDataVersion()
+  const [selectedId, setSelectedId] = React.useState<string | null>(null)
   const [dragging, setDragging] = React.useState<string | null>(null)
   const [dropTarget, setDropTarget] = React.useState<LeadStage | null>(null)
+  const [addOpen, setAddOpen] = React.useState(false)
+  /** A move to `lost` is held here until a reason is given — the server needs it. */
+  const [losing, setLosing] = React.useState<LeadCard | null>(null)
+  const [lostReason, setLostReason] = React.useState(LOST_REASONS[0])
+  const [lostNote, setLostNote] = React.useState('')
+
+  // Read straight through the live binding rather than copying into state:
+  // `rebuild()` refreshes it after every write, so there is only ever one
+  // version of the board.
+  const cards = React.useMemo(() => leadCards, [version])
+  const selected = React.useMemo(() => cards.find((c) => c.id === selectedId) ?? null, [cards, selectedId])
 
   const columns = React.useMemo(() => groupByStage(cards), [cards])
   const open = cards.filter((c) => c.stage !== 'won' && c.stage !== 'lost')
   const late = open.filter((c) => c.late)
 
+  async function commitMove(lead: LeadCard, stage: LeadStage, reason?: string) {
+    await mutate(
+      () => api.crm.moveStage.mutate({ leadId: lead.id, stage, lostReason: reason }),
+      {
+        success: () => ({
+          title: `${lead.name} → ${STAGES.find((s) => s.id === stage)?.label}`,
+          detail: stage === 'lost' ? reason : STAGES.find((s) => s.id === stage)?.nextAction,
+        }),
+      },
+    )
+  }
+
   const move = (lead: LeadCard, stage: LeadStage) => {
     if (lead.stage === stage) return
-    const previous = lead.stage
-    setCards((prev) => prev.map((c) => (c.id === lead.id ? { ...c, stage, ageDays: 0, late: false } : c)))
-    setSelected((prev) => (prev && prev.id === lead.id ? { ...prev, stage, ageDays: 0, late: false } : prev))
-    toast({
-      tone: stage === 'lost' ? 'neutral' : 'good',
-      title: `${lead.name} → ${STAGES.find((s) => s.id === stage)?.label}`,
-      detail: STAGES.find((s) => s.id === stage)?.nextAction,
-      action: {
-        label: 'Undo',
-        onClick: () =>
-          setCards((prev) =>
-            prev.map((c) => (c.id === lead.id ? { ...c, stage: previous, ageDays: lead.ageDays, late: lead.late } : c)),
-          ),
-      },
-    })
+    // Losing a lead without a reason would leave a hole in the loss-reason
+    // report, so the board asks before it writes rather than after.
+    if (stage === 'lost') {
+      setLostReason(LOST_REASONS[0])
+      setLostNote('')
+      setLosing(lead)
+      return
+    }
+    void commitMove(lead, stage)
   }
 
   return (
@@ -72,7 +107,7 @@ export function LeadsBoard() {
           </>
         }
         actions={
-          <Button variant="primary" size="sm">
+          <Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>
             <Plus />
             Add lead
           </Button>
@@ -149,7 +184,7 @@ export function LeadsBoard() {
                           />
                           <button
                             type="button"
-                            onClick={() => setSelected(lead)}
+                            onClick={() => setSelectedId(lead.id)}
                             className="min-w-0 flex-1 text-left"
                           >
                             <span className="block truncate text-sm font-medium text-foreground">{lead.name}</span>
@@ -188,7 +223,55 @@ export function LeadsBoard() {
         </div>
       </PageBody>
 
-      <LeadPanel lead={selected} onClose={() => setSelected(null)} onMove={move} />
+      <LeadPanel lead={selected} onClose={() => setSelectedId(null)} onMove={move} />
+
+      <AddLeadDialog open={addOpen} onClose={() => setAddOpen(false)} />
+
+      <Modal
+        open={losing !== null}
+        onClose={() => setLosing(null)}
+        title={losing ? `Mark ${losing.name} lost` : 'Mark lost'}
+        description="The reason is what the loss-reason breakdown is built from, so it is required."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setLosing(null)}>
+              Cancel
+            </Button>
+            <Button
+              data-autofocus
+              variant="danger"
+              onClick={async () => {
+                const lead = losing
+                if (!lead) return
+                setLosing(null)
+                await commitMove(lead, 'lost', lostNote.trim() ? `${lostReason} — ${lostNote.trim()}` : lostReason)
+              }}
+            >
+              Mark lost
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <Field label="Reason" htmlFor="lost-reason">
+            <Select id="lost-reason" value={lostReason} onChange={(e) => setLostReason(e.currentTarget.value)}>
+              {LOST_REASONS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Anything else" htmlFor="lost-note" help="Optional. Added to the reason on the record.">
+            <Textarea
+              id="lost-note"
+              className="min-h-20"
+              value={lostNote}
+              onChange={(e) => setLostNote(e.currentTarget.value)}
+            />
+          </Field>
+        </div>
+      </Modal>
     </RequireScreen>
   )
 }

@@ -72,13 +72,22 @@ function build(): Payment[] {
   return out
 }
 
-export const payments: Payment[] = build()
+// `let` + setPayments(): ESM live bindings. Taking a payment appends a row to
+// the ledger in D1 and then swaps this array, so the member's billing tab, the
+// invoice list and the revenue chart all move together. See lib/data/hydrate.ts.
+export let payments: Payment[] = build()
 
-export const paymentById = new Map(payments.map((p) => [p.id, p]))
+export let paymentById = new Map(payments.map((p) => [p.id, p]))
 
 export function paymentsForMember(memberId: string): Payment[] {
   return payments.filter((p) => p.memberId === memberId)
 }
 
 /** Failed + pending rows that need follow-up (dunning queue seed). */
-export const outstandingPayments = payments.filter((p) => p.status === "failed" || p.status === "pending")
+export let outstandingPayments = payments.filter((p) => p.status === "failed" || p.status === "pending")
+
+export function setPayments(next: Payment[]): void {
+  payments = next
+  paymentById = new Map(payments.map((p) => [p.id, p]))
+  outstandingPayments = payments.filter((p) => p.status === "failed" || p.status === "pending")
+}

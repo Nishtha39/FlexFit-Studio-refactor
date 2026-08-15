@@ -41,6 +41,11 @@ const out = {
   payments: d.payments,
   leads: d.leads,
   notifications: d.notifications,
+  equipment: d.equipment,
+  equipmentFaults: d.equipmentFaults,
+  equipmentServices: d.equipmentServices,
+  equipmentReservations: d.equipmentReservations,
+  memberNotes: d.memberNotes,
 }
 
 mkdirSync(path.join(root, 'server/db'), { recursive: true })

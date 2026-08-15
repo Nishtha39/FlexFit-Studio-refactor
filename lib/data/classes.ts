@@ -108,9 +108,10 @@ function build(): GymClass[] {
   return out
 }
 
-export const classes: GymClass[] = build()
+// `let` + setClasses(): ESM live bindings. See lib/data/hydrate.ts.
+export let classes: GymClass[] = build()
 
-export const classById = new Map(classes.map((c) => [c.id, c]))
+export let classById = new Map(classes.map((c) => [c.id, c]))
 
 export function getClass(id: string): GymClass | undefined {
   return classById.get(id)
@@ -122,4 +123,9 @@ export function classesForDay(day: number): GymClass[] {
 
 export function isFull(c: GymClass): boolean {
   return c.roster.length >= c.capacity
+}
+
+export function setClasses(next: GymClass[]): void {
+  classes = next
+  classById = new Map(classes.map((c) => [c.id, c]))
 }

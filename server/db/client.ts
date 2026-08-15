@@ -17,10 +17,22 @@ export interface AssetFetcher {
   fetch(request: Request): Promise<Response>
 }
 
-/** Worker bindings, as declared in wrangler.jsonc. */
+/**
+ * Worker bindings, as declared in wrangler.jsonc.
+ *
+ * The email variables are optional and are SECRETS, not config — they are set
+ * with `wrangler secret put` and never appear in wrangler.jsonc. When they are
+ * absent the app still runs; the mail procedures refuse with a message naming
+ * what is missing rather than pretending to send. See server/email/send.ts.
+ */
 export interface Env {
   DB: D1Database
   ASSETS: AssetFetcher
+  /** Resend API key. Without it, no mail is sent and the UI says so. */
+  RESEND_API_KEY?: string
+  /** "FlexFit Studio <hello@yourdomain.com>" — must be a Resend-verified domain. */
+  EMAIL_FROM?: string
+  EMAIL_REPLY_TO?: string
 }
 
 export type Db = DrizzleD1Database<typeof schema>

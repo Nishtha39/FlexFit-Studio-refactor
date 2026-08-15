@@ -6,16 +6,18 @@ import { useRouter } from 'next/navigation'
 import { ChevronRight, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
-  TableWrap,
-  Table,
-  Thead,
-  Tbody,
-  Th,
-  Tr,
-  Td,
-  SelectCell,
-  SelectAllCell,
   CellStack,
+  SelectAllCell,
+  SelectCell,
+  SerialTd,
+  SerialTh,
+  Table,
+  TableWrap,
+  Tbody,
+  Td,
+  Th,
+  Thead,
+  Tr,
   type SortDir,
 } from '@/components/ui/table'
 import { MemberStatus, RiskScore } from '@/components/ui/status-chip'
@@ -124,6 +126,7 @@ export function MembersTable({
               indeterminate={someSelected}
               onChange={toggleAll}
             />
+            <SerialTh />
             {COLUMNS.map((col) => (
               <Th
                 key={col.label}
@@ -143,7 +146,7 @@ export function MembersTable({
           </Tr>
         </Thead>
         <Tbody>
-          {members.map((member) => {
+          {members.map((member, i) => {
             const view = toMemberView(member)
             const m = member.metrics
             const isSelected = selected.has(member.id)
@@ -160,6 +163,7 @@ export function MembersTable({
                   label={member.name}
                   onChange={(next) => toggleOne(member.id, next)}
                 />
+                <SerialTd index={i} />
                 <Td className="max-w-0">
                   <div className="flex items-center gap-2">
                     <span

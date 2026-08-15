@@ -12,13 +12,26 @@ import { FilterBar, FilterTrigger } from '@/components/ui/filter-chip'
 import { Modal, ConsequenceNotice } from '@/components/ui/modal'
 import { PaymentStatus, StatusChip } from '@/components/ui/status-chip'
 import { EmptyState } from '@/components/ui/empty-state'
-import { CellStack, Table, TableWrap, Tbody, Td, Th, Thead, Tr } from '@/components/ui/table'
+import {
+  CellStack,
+  SerialTd,
+  SerialTh,
+  Table,
+  TableWrap,
+  Tbody,
+  Td,
+  Th,
+  Thead,
+  Tr,
+} from '@/components/ui/table'
 import { useToast } from '@/components/ui/toast'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
+import { datedFilename, downloadCsv } from '@/lib/export'
 import { payments as seedPayments } from '@/lib/data/payments'
 import { clock, compactMoney, money, num, percent, shortDate } from '@/lib/format'
 import type { Payment, PaymentMethod, PaymentStatus as PayStatus } from '@/lib/types'
 import {
-  buildReversal,
   ledgerRows,
   ledgerTotals,
   methodSplit,
@@ -46,15 +59,26 @@ const METHOD_FILTERS: MethodKey[] = ['all', 'card', 'upi', 'cash', 'transfer']
  */
 export function PaymentsLedger() {
   const { toast } = useToast()
-  const [extra, setExtra] = React.useState<Payment[]>([])
+  const { mutate, busy } = useStudio()
+  const version = useDataVersion()
   const [status, setStatus] = React.useState<StatusKey>('all')
   const [method, setMethod] = React.useState<MethodKey>('all')
   const [query, setQuery] = React.useState('')
   const [refundTarget, setRefundTarget] = React.useState<Payment | null>(null)
   const [reason, setReason] = React.useState<string>(REFUND_REASONS[0])
 
+  // A member profile links here with ?q=<their name>, so "open in ledger" lands
+  // on their rows rather than on seven years of everybody's.
+  React.useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get('q')
+    if (q) setQuery(q)
+  }, [])
+
   const all = React.useMemo(() => {
-    const merged = [...seedPayments, ...extra]
+    // Straight off the live binding — a refund is a real row now, so there is
+    // no local `extra` list to merge and nothing that can disagree with the
+    // member's lifetime value on the profile screen.
+    const merged = [...seedPayments]
     // Reversals sit directly under their original, everything else newest first.
     const primaries = merged.filter((p) => p.reversalOf === null).sort((a, b) => (a.date < b.date ? 1 : -1))
     const out: Payment[] = []
@@ -63,7 +87,7 @@ export function PaymentsLedger() {
       out.push(...merged.filter((r) => r.reversalOf === p.id))
     }
     return ledgerRows(out)
-  }, [extra])
+  }, [version])
 
   const totals = React.useMemo(() => ledgerTotals(all), [all])
   const split = React.useMemo(() => methodSplit(all), [all])
@@ -82,16 +106,43 @@ export function PaymentsLedger() {
     })
   }, [all, status, method, query])
 
-  const refund = () => {
+  const refund = async () => {
     if (!refundTarget) return
-    const reversal = buildReversal(refundTarget, reason)
-    setExtra((prev) => [...prev, reversal])
+    const target = refundTarget
     setRefundTarget(null)
+    await mutate(() => api.billing.refund.mutate({ paymentId: target.id, reason }), {
+      success: (r) => ({
+        title: 'Reversal row added',
+        detail: `${money(Math.abs(r.amount))} against ${target.invoiceId}. The original row is untouched.`,
+      }),
+    })
+  }
+
+  /**
+   * Export what is on screen, not the whole ledger — the filters above are the
+   * question being asked, and an export that silently ignores them answers a
+   * different one.
+   */
+  const exportCsv = () => {
+    const n = downloadCsv(datedFilename('payments'), rows, [
+      { header: 'S.no', value: (_r, i) => i + 1 },
+      { header: 'Date', value: (r) => r.payment.date.slice(0, 10) },
+      { header: 'Payment ID', value: (r) => r.payment.id },
+      { header: 'Invoice', value: (r) => r.payment.invoiceId },
+      { header: 'Member', value: (r) => r.memberName },
+      { header: 'Member ID', value: (r) => r.payment.memberId },
+      { header: 'Plan', value: (r) => r.planName },
+      { header: 'Description', value: (r) => r.payment.description },
+      { header: 'Method', value: (r) => METHOD_LABELS[r.payment.method] },
+      { header: 'Status', value: (r) => r.payment.status },
+      // Unformatted so a spreadsheet can sum the column; reversals stay negative.
+      { header: 'Amount (INR)', value: (r) => r.payment.amount },
+      { header: 'Reversal of', value: (r) => r.payment.reversalOf ?? '' },
+    ])
     toast({
-      tone: 'info',
-      title: 'Reversal row added',
-      detail: `${money(reversal.amount)} against ${refundTarget.invoiceId}. The original row is untouched.`,
-      action: { label: 'Undo', onClick: () => setExtra((prev) => prev.filter((p) => p.id !== reversal.id)) },
+      tone: 'good',
+      title: `Exported ${num(n)} rows`,
+      detail: status === 'all' && method === 'all' && !query.trim() ? 'The whole ledger.' : 'Matching the filters on screen.',
     })
   }
 
@@ -110,7 +161,7 @@ export function PaymentsLedger() {
           </>
         }
         actions={
-          <Button variant="secondary" size="sm">
+          <Button variant="secondary" size="sm" onClick={exportCsv} disabled={rows.length === 0}>
             <Download />
             Export CSV
           </Button>
@@ -195,6 +246,7 @@ export function PaymentsLedger() {
               <Table>
                 <Thead>
                   <tr>
+                    <SerialTh />
                     <Th width={130}>Date</Th>
                     <Th width={110}>Txn</Th>
                     <Th>Member</Th>
@@ -206,8 +258,9 @@ export function PaymentsLedger() {
                   </tr>
                 </Thead>
                 <Tbody>
-                  {rows.map((row) => (
+                  {rows.map((row, i) => (
                     <Tr key={row.payment.id} className={row.isReversal ? 'bg-subtle' : undefined}>
+                      <SerialTd index={i} />
                       <Td muted className="tnum">
                         {shortDate(row.payment.date)}
                         <span className="ml-1.5 text-micro opacity-70">{clock(row.payment.date)}</span>
@@ -282,7 +335,7 @@ export function PaymentsLedger() {
             <Button variant="secondary" onClick={() => setRefundTarget(null)}>
               Cancel
             </Button>
-            <Button data-autofocus variant="danger" onClick={refund}>
+            <Button data-autofocus variant="danger" disabled={busy} onClick={refund}>
               Add reversal row
             </Button>
           </>

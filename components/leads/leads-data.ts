@@ -56,7 +56,12 @@ export function toCard(lead: Lead): LeadCard {
   }
 }
 
-export const leadCards: LeadCard[] = leads.map(toCard)
+export let leadCards: LeadCard[] = leads.map(toCard)
+
+/** Recompute the board after a stage move. */
+export function rebuild(): void {
+  leadCards = leads.map(toCard)
+}
 
 export function groupByStage(cards: LeadCard[]): Record<LeadStage, LeadCard[]> {
   const out = {} as Record<LeadStage, LeadCard[]>

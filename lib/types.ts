@@ -257,3 +257,156 @@ export interface AppNotification {
   /** Optional linked entity for deep-linking. */
   entity: { type: "member" | "class" | "company" | "payment" | "lead"; id: ID } | null
 }
+
+// ---------------------------------------------------------------------------
+// Equipment
+// ---------------------------------------------------------------------------
+// Added after the original ten entities. It is a genuine entity rather than a
+// derivation: an asset has an identity, a purchase price, a service history and
+// a physical location, none of which can be computed from anything else here.
+//
+// Four tables, because they answer four different questions and have different
+// lifetimes: what we own (`Equipment`), what is broken (`EquipmentFault`), what
+// it has cost to keep running (`EquipmentService`), and who has reserved it
+// (`EquipmentReservation`). Folding faults into a status column on the asset
+// would lose who reported it and when, which is the whole point of a fault log.
+
+export type EquipmentCategory =
+  | "cardio"
+  | "strength"
+  | "free-weights"
+  | "functional"
+  | "recovery"
+  | "studio"
+
+/**
+ * `retired` is terminal and distinct from `out-of-service`: a retired asset is
+ * gone from the floor and stops counting toward capacity, an out-of-service one
+ * is expected back. Reports need to tell those apart.
+ */
+export type EquipmentStatus = "in-service" | "needs-service" | "out-of-service" | "retired"
+
+export interface Equipment {
+  id: ID
+  name: string
+  category: EquipmentCategory
+  make: string
+  model: string
+  /** Asset tag stencilled on the machine — what a trainer reads off the frame. */
+  assetTag: string
+  location: LocationId
+  /** Where on the floor: "Cardio deck", "Rig 2", "Studio B". */
+  zone: string
+  /** Identical units of this asset in that zone (8 treadmills = one row, qty 8). */
+  quantity: number
+  status: EquipmentStatus
+  purchaseDate: string // ISO date
+  /** Purchase price per unit, INR. */
+  unitCost: number
+  /** Straight-line depreciation period. Book value is derived, never stored. */
+  usefulLifeMonths: number
+  /** Days between routine services. Due date is derived from the last service. */
+  serviceIntervalDays: number
+  lastServiceDate: string | null // ISO date
+  /** Members may reserve this (a court, a reformer, a sled lane). */
+  bookable: boolean
+  /** Length of one reservation slot, minutes. Meaningless when !bookable. */
+  slotMinutes: number
+  notes: string
+}
+
+export type FaultSeverity = "minor" | "major" | "unsafe"
+export type FaultStatus = "open" | "acknowledged" | "resolved"
+
+export interface EquipmentFault {
+  id: ID
+  equipmentId: ID
+  /** Staff id or member id — anyone on the floor can report a fault. */
+  reportedBy: ID
+  reporterName: string
+  reportedAt: string // ISO
+  severity: FaultSeverity
+  summary: string
+  status: FaultStatus
+  resolvedAt: string | null
+  resolutionNote: string | null
+}
+
+export type ServiceKind = "routine" | "repair" | "inspection" | "install"
+
+export interface EquipmentService {
+  id: ID
+  equipmentId: ID
+  date: string // ISO date
+  kind: ServiceKind
+  vendor: string
+  /** INR. Install rows carry the purchase cost so lifetime spend adds up. */
+  cost: number
+  note: string
+}
+
+export type ReservationStatus = "booked" | "cancelled" | "completed"
+
+export interface EquipmentReservation {
+  id: ID
+  equipmentId: ID
+  memberId: ID
+  date: string // ISO date
+  startTime: string // "18:00"
+  durationMin: number
+  status: ReservationStatus
+  createdAt: string // ISO
+}
+
+// ---------------------------------------------------------------------------
+// Member notes
+// ---------------------------------------------------------------------------
+/**
+ * A note written against a member by a member of staff. Pinning is the one
+ * decision the notes screen makes operational: a pinned note is shown at the
+ * kiosk before the door opens, so it is an instruction rather than a comment.
+ */
+export type NoteKind = "note" | "call" | "injury" | "goal" | "complaint"
+
+export interface MemberNote {
+  id: ID
+  memberId: ID
+  kind: NoteKind
+  body: string
+  authorId: ID
+  timestamp: string // ISO
+  pinned: boolean
+}
+
+// ---------------------------------------------------------------------------
+// Work items
+// ---------------------------------------------------------------------------
+/**
+ * A decision recorded against a *derived* queue row.
+ *
+ * The attention queue, the intervention queue and the dunning ladder are all
+ * computed from the entities — nothing about a member says "someone already
+ * rang them about this". That fact is not derivable, so it is the one thing
+ * those queues genuinely need to store, keyed on the derived row's stable id.
+ *
+ * Deliberately generic rather than three near-identical tables: the three
+ * queues differ in how their rows are computed, not in what a human does to
+ * one — pick it up, put it off, or finish it.
+ */
+export type WorkQueue = "attention" | "retention" | "dunning"
+export type WorkItemStatus = "open" | "snoozed" | "done"
+
+export interface WorkItem {
+  /** The derived row's own id, e.g. `ret-m-0142`. */
+  id: ID
+  queue: WorkQueue
+  status: WorkItemStatus
+  assigneeId: ID | null
+  /** ISO date; the row returns to the queue on its own once this passes. */
+  snoozedUntil: string | null
+  /** What was done, in the queue's own words. */
+  resolution: string | null
+  note: string | null
+  updatedAt: string // ISO
+  updatedBy: ID
+}

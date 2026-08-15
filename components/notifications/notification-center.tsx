@@ -11,9 +11,10 @@ import { Button } from '@/components/ui/button'
 import { FilterBar, FilterTrigger } from '@/components/ui/filter-chip'
 import { StatusChip, type Tone } from '@/components/ui/status-chip'
 import { EmptyState } from '@/components/ui/empty-state'
-import { useToast } from '@/components/ui/toast'
 import { cn } from '@/lib/utils'
-import { notifications as seedNotifications } from '@/lib/data/notifications'
+import { notifications as allNotifications } from '@/lib/data/notifications'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
 import { clock, daysAgo, shortDate } from '@/lib/format'
 import type { AppNotification, NotificationKind, NotificationSeverity } from '@/lib/types'
 import { useListTraversal, TraversalHint } from '@/components/command/use-list-traversal'
@@ -50,9 +51,9 @@ function hrefFor(entity: AppNotification['entity']): string | null {
  * I go" — a notification that can't be acted on doesn't belong in the list.
  */
 export function NotificationCenter() {
-  const { toast } = useToast()
   const router = useRouter()
-  const [rows, setRows] = React.useState<AppNotification[]>(seedNotifications)
+  const { mutate, connection } = useStudio()
+  const version = useDataVersion()
   const [kind, setKind] = React.useState<'all' | NotificationKind>('all')
   const [unreadOnly, setUnreadOnly] = React.useState(false)
   const [composeOpen, setComposeOpen] = React.useState(false)
@@ -62,18 +63,35 @@ export function NotificationCenter() {
     if (new URLSearchParams(window.location.search).get('compose') === '1') setComposeOpen(true)
   }, [])
 
+  // Straight off the live binding: read state is stored, so the unread badge in
+  // the sidebar and this list can never disagree about what has been seen.
+  const rows = React.useMemo(() => allNotifications, [version])
+
   const visible = rows.filter(
     (n) => (kind === 'all' || n.kind === kind) && (!unreadOnly || !n.read),
   )
   const unread = rows.filter((n) => !n.read).length
 
+  /**
+   * Marking read is silent on purpose — no toast. It is a side effect of
+   * reading, not an action somebody chose, and a toast for every row you glance
+   * at is noise. A failure still surfaces, because `mutate` reports those.
+   */
+  const markRead = React.useCallback(
+    (n: AppNotification) => {
+      if (connection !== 'live' || n.read) return
+      void mutate(() => api.crm.markNotificationRead.mutate({ id: n.id, read: true }))
+    },
+    [connection, mutate],
+  )
+
   const open = React.useCallback(
     (n: AppNotification) => {
-      setRows((prev) => prev.map((r) => (r.id === n.id ? { ...r, read: true } : r)))
+      markRead(n)
       const href = hrefFor(n.entity)
       if (href) router.push(href)
     },
-    [router],
+    [markRead, router],
   )
 
   const { rowProps } = useListTraversal({ items: visible, onOpen: open, enabled: !composeOpen })
@@ -95,11 +113,15 @@ export function NotificationCenter() {
             <Button
               variant="secondary"
               size="sm"
-              disabled={unread === 0}
-              onClick={() => {
-                setRows((prev) => prev.map((r) => ({ ...r, read: true })))
-                toast({ tone: 'neutral', title: 'All caught up', detail: `${unread} notifications marked read.` })
-              }}
+              disabled={unread === 0 || connection !== 'live'}
+              onClick={() =>
+                void mutate(() => api.crm.markAllNotificationsRead.mutate(), {
+                  success: () => ({
+                    title: 'All caught up',
+                    detail: `${unread} notification${unread === 1 ? '' : 's'} marked read.`,
+                  }),
+                })
+              }
             >
               <Check />
               Mark all read
@@ -168,7 +190,7 @@ export function NotificationCenter() {
                       {href ? (
                         <Link
                           href={href}
-                          onClick={() => setRows((prev) => prev.map((r) => (r.id === n.id ? { ...r, read: true } : r)))}
+                          onClick={() => markRead(n)}
                           className="text-micro font-medium text-primary underline-offset-2 hover:underline"
                         >
                           Open
@@ -178,7 +200,8 @@ export function NotificationCenter() {
                         <Button
                           variant="ghost"
                           size="xs"
-                          onClick={() => setRows((prev) => prev.map((r) => (r.id === n.id ? { ...r, read: true } : r)))}
+                          disabled={connection !== 'live'}
+                          onClick={() => markRead(n)}
                         >
                           Mark read
                         </Button>

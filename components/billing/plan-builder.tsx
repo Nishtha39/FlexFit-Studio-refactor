@@ -9,7 +9,8 @@ import { Button } from '@/components/ui/button'
 import { Field, Input, Select } from '@/components/ui/input'
 import { ConfirmDialog, ConsequenceNotice } from '@/components/ui/modal'
 import { DeltaText, StatusChip } from '@/components/ui/status-chip'
-import { useToast } from '@/components/ui/toast'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
 import { cn } from '@/lib/utils'
 import { compactMoney, money, num } from '@/lib/format'
 import type { Plan } from '@/lib/types'
@@ -29,15 +30,23 @@ import {
  * including how many would be pushed over their visit allowance.
  */
 export function PlanBuilder() {
-  const { toast } = useToast()
+  const { mutate, connection, busy } = useStudio()
+  const version = useDataVersion()
   const [selectedId, setSelectedId] = React.useState(planCatalog[2].id)
-  const selected = planCatalog.find((p) => p.id === selectedId) as Plan
+  const catalog = React.useMemo(() => planCatalog, [version])
+  const selected = catalog.find((p) => p.id === selectedId) as Plan
   const [draft, setDraft] = React.useState<PlanDraft>(() => draftFromPlan(selected))
   const [publishOpen, setPublishOpen] = React.useState(false)
 
+  // Reload the draft when the plan changes underneath it — either because a
+  // different plan was picked, or because publishing re-read it from the
+  // database. Keying on the stored values (not the object) means a hydrate that
+  // returned identical data does not throw away an in-progress edit.
+  const publishedKey = `${selected.id}|${selected.name}|${selected.interval}|${selected.price}|${selected.visitsPerMonth}|${selected.active}|${selected.perks.join('|')}`
   React.useEffect(() => {
     setDraft(draftFromPlan(selected))
-  }, [selected])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publishedKey])
 
   const impact = React.useMemo(() => planImpact(draft), [draft])
   const dirty =
@@ -48,8 +57,38 @@ export function PlanBuilder() {
     draft.active !== selected.active ||
     draft.perks.join('|') !== selected.perks.join('|')
 
+  // The server refuses this combination; saying so here means the operator finds
+  // out while editing rather than after pressing Publish.
+  const perVisitWithAllowance = draft.interval === 'per-visit' && draft.visitsPerMonth !== null
+
   const set = <K extends keyof PlanDraft>(key: K, value: PlanDraft[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }))
+
+  const publish = () => {
+    if (connection !== 'live') return
+    void mutate(
+      () =>
+        api.ops.savePlan.mutate({
+          planId: draft.id,
+          name: draft.name.trim(),
+          interval: draft.interval,
+          price: draft.price,
+          visitsPerMonth: draft.visitsPerMonth,
+          corporateOnly: draft.corporateOnly,
+          active: draft.active,
+          perks: draft.perks,
+        }),
+      {
+        success: () => ({
+          title: `${draft.name} published`,
+          detail:
+            impact.members === 0
+              ? 'Nobody holds this plan yet, so nothing changes for existing members.'
+              : `${num(impact.members)} member${impact.members === 1 ? '' : 's'} move to ${money(draft.price)} at their next renewal.`,
+        }),
+      },
+    )
+  }
 
   return (
     <RequireScreen screen="billing">
@@ -62,7 +101,7 @@ export function PlanBuilder() {
         ]}
         meta={
           <>
-            <span className="tnum">{planCatalog.length} plans</span>
+            <span className="tnum">{catalog.length} plans</span>
             <span aria-hidden>·</span>
             <span className="tnum">{num(impact.members)} members on {selected.name}</span>
           </>
@@ -72,7 +111,12 @@ export function PlanBuilder() {
             <Button variant="secondary" size="sm" disabled={!dirty} onClick={() => setDraft(draftFromPlan(selected))}>
               Discard
             </Button>
-            <Button variant="primary" size="sm" disabled={!dirty} onClick={() => setPublishOpen(true)}>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!dirty || busy || perVisitWithAllowance || draft.name.trim().length === 0 || connection !== 'live'}
+              onClick={() => setPublishOpen(true)}
+            >
               Publish changes
             </Button>
           </>
@@ -87,7 +131,7 @@ export function PlanBuilder() {
           <Card className="overflow-hidden">
             <CardHeader title="Catalog" description="Pick a plan to edit." />
             <ul className="divide-y divide-border">
-              {planCatalog.map((plan) => {
+              {catalog.map((plan) => {
                 const active = plan.id === selectedId
                 return (
                   <li key={plan.id}>
@@ -247,7 +291,13 @@ export function PlanBuilder() {
                 <span className="text-micro text-muted-foreground">at next renewal</span>
               </div>
 
-              {impact.overAllowance > 0 ? (
+              {perVisitWithAllowance ? (
+                <ConsequenceNotice
+                  tone="danger"
+                  headline="A per-visit plan cannot also cap monthly visits"
+                  detail="Per-visit billing charges each check-in, so there is no monthly allowance to spend. Set visits to Unlimited, or bill monthly instead."
+                />
+              ) : impact.overAllowance > 0 ? (
                 <ConsequenceNotice
                   tone="warn"
                   headline={`${impact.overAllowance} members already exceed ${draft.visitsPerMonth} visits`}
@@ -267,13 +317,7 @@ export function PlanBuilder() {
       <ConfirmDialog
         open={publishOpen}
         onClose={() => setPublishOpen(false)}
-        onConfirm={() =>
-          toast({
-            tone: 'good',
-            title: `${draft.name} published`,
-            detail: `${num(impact.members)} members move to ${money(draft.price)} at their next renewal.`,
-          })
-        }
+        onConfirm={publish}
         title={`Publish ${draft.name}?`}
         description="Applies at each member's next renewal date."
         consequenceTone={impact.deltaMrr < 0 || impact.overAllowance > 0 ? 'danger' : 'warn'}

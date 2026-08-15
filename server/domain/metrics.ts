@@ -24,7 +24,7 @@ export async function recomputeMemberMetrics(db: Db, memberId: string): Promise<
   const from60 = isoDate(addDays(NOW, -60))
   const today = isoDate(NOW)
 
-  const [visits, prevVisits, lastVisitRow, failed, lifetime] = await Promise.all([
+  const [visits, prevVisits, lastVisitRow, failed, lifetime, baseRow] = await Promise.all([
     db
       .select({ n: sql<number>`count(*)` })
       .from(checkIns)
@@ -41,12 +41,24 @@ export async function recomputeMemberMetrics(db: Db, memberId: string): Promise<
       .select({ n: sql<number>`count(*)` })
       .from(payments)
       .where(and(eq(payments.memberId, memberId), eq(payments.status, 'failed'))),
-    // Lifetime value replays the ledger: paid rows add, reversal rows are
-    // already negative, so a plain sum is the net the member has actually paid.
+    /**
+     * Lifetime value = a stored base + the ledger.
+     *
+     * The ledger alone is NOT the answer, and assuming it was is the bug this
+     * shape exists to prevent: `payments` covers one billing cycle, so summing
+     * it replaced a member's multi-year lifetime value with a single-cycle
+     * figure — or with zero for the 326 of 380 members who have no payment row
+     * at all. A kiosk check-in was enough to trigger it, and nothing errored.
+     *
+     * `metric_lifetime_base` is what they paid before this window. Adding the
+     * ledger to it means a payment moves the number by exactly the payment, and
+     * a reversal by exactly the reversal. See migration 0004.
+     */
     db
       .select({ total: sql<number>`coalesce(sum(${payments.amount}), 0)` })
       .from(payments)
       .where(and(eq(payments.memberId, memberId), sql`${payments.status} != 'pending'`)),
+    db.select({ base: members.metricLifetimeBase }).from(members).where(eq(members.id, memberId)),
   ])
 
   const visitsLast30 = Number(visits[0]?.n ?? 0)
@@ -63,7 +75,10 @@ export async function recomputeMemberMetrics(db: Db, memberId: string): Promise<
       // Four weeks in the 30-day window, matching how the seed generator framed it.
       metricAvgVisitsPerWeek: Math.round((visitsLast30 / 30) * 7 * 10) / 10,
       metricFailedPayments: Number(failed[0]?.n ?? 0),
-      metricLifetimeValue: Math.max(0, Number(lifetime[0]?.total ?? 0)),
+      metricLifetimeValue: Math.max(
+        0,
+        Number(baseRow[0]?.base ?? 0) + Number(lifetime[0]?.total ?? 0),
+      ),
     })
     .where(eq(members.id, memberId))
 

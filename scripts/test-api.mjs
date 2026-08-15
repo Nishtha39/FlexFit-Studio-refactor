@@ -13,6 +13,12 @@
  *
  * Mutations are made against a scratch class and then undone, so the suite can
  * be run repeatedly against the same database without drifting the seed.
+ *
+ * LOCAL-ONLY. THIS SUITE MUTATES: it refunds real payments, retries failed ones
+ * and writes check-ins. It has damaged production twice — most recently by
+ * refunding a seeded ₹49,000 payment, which the old lifetime-value formula then
+ * turned into a permanent ₹0 on that member. Point it at a reseedable local D1.
+ * The production pass is `pnpm test:live`, which writes nothing.
  */
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8789'
 const API = `${BASE}/api/trpc`
@@ -287,6 +293,86 @@ check(
   afterRepeat.attendanceMatrix.flat().reduce((a, b) => a + b, 0) ===
     (await query('read.checkInCount')).total,
   'heatmap total vs COUNT(*) on check_ins',
+)
+
+// ---------------------------------------------------------------------------
+section('lifetime value moves by the amount, not by a replay')
+/**
+ * Runs AFTER the front-desk section on purpose: it checks somebody in, and the
+ * heatmap assertions above capture their baseline before doing so. Putting this
+ * first moved the heatmap under them and reddened two checks that were fine.
+ *
+ * The regression this section exists for.
+ *
+ * `recomputeMemberMetrics` used to set lifetime value to the SUM of the
+ * member's payment rows. That is not their lifetime value — `payments` holds
+ * one billing cycle, and most members have no row in it at all — so any write
+ * that recomputed metrics (a kiosk check-in was enough) replaced a modelled
+ * multi-year figure with a single-cycle sum, or with zero. The highest-value
+ * member in the seed fell from ₹4,32,378 to ₹0 on scanning in, silently.
+ *
+ * The assertions below are deltas, never absolutes: a payment must move the
+ * number by exactly the payment, a refund by exactly the refund, and a
+ * check-in must not move it at all. A replay fails all three.
+ */
+/**
+ * The member has to be one the bug actually bites: a real lifetime value and NO
+ * rows in the ledger, which describes 326 of the 380. Picking any active member
+ * is not enough — for somebody whose whole history IS in this cycle the two
+ * formulas agree, and the check passes against the broken code. That happened
+ * on the first attempt at this test.
+ */
+const paidMemberIds = new Set(boot.payments.map((p) => p.memberId))
+const ltvMember = boot.members.find(
+  (m) => m.status === 'active' && m.metrics.lifetimeValue > 0 && !paidMemberIds.has(m.id),
+)
+check(
+  'found a member with history but no ledger rows',
+  Boolean(ltvMember),
+  'the seed no longer contains one — this section would stop testing anything',
+)
+const ltvBefore = (await query('read.bootstrap')).members.find((m) => m.id === ltvMember.id)
+  .metrics.lifetimeValue
+
+const took = await mutate('ops.takePayment', {
+  memberId: ltvMember.id,
+  amount: 2500,
+  method: 'upi',
+  description: 'Lifetime-value delta check',
+})
+check('a payment can be taken', took.ok, took.ok ? '' : took.message)
+const ltvAfterPay = (await query('read.bootstrap')).members.find((m) => m.id === ltvMember.id)
+  .metrics.lifetimeValue
+check(
+  'taking a payment moves lifetime value by exactly the amount',
+  ltvAfterPay === ltvBefore + 2500,
+  `${ltvBefore} -> ${ltvAfterPay}, expected ${ltvBefore + 2500}`,
+)
+
+const reversedNew = await mutate('billing.refund', {
+  paymentId: took.data.id,
+  reason: 'Lifetime-value delta check',
+})
+check('the new payment can be refunded', reversedNew.ok, reversedNew.ok ? '' : reversedNew.message)
+const ltvAfterRefund = (await query('read.bootstrap')).members.find((m) => m.id === ltvMember.id)
+  .metrics.lifetimeValue
+check(
+  'refunding puts lifetime value back exactly where it was',
+  ltvAfterRefund === ltvBefore,
+  `${ltvAfterRefund}, expected ${ltvBefore}`,
+)
+
+const ltvCheckIn = await mutate('ops.checkIn', {
+  memberId: ltvMember.id,
+  location: ltvMember.homeLocation,
+})
+check('the member can check in', ltvCheckIn.ok, ltvCheckIn.ok ? '' : ltvCheckIn.message)
+const ltvAfterVisit = (await query('read.bootstrap')).members.find((m) => m.id === ltvMember.id)
+  .metrics.lifetimeValue
+check(
+  'a check-in does NOT change lifetime value',
+  ltvAfterVisit === ltvBefore,
+  `${ltvAfterVisit}, expected ${ltvBefore}`,
 )
 
 // ---------------------------------------------------------------------------

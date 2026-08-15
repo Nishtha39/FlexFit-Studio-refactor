@@ -1,28 +1,31 @@
 'use client'
 
 import * as React from 'react'
-import { Mail, Phone, MessageSquare, Snowflake, CreditCard, MoreHorizontal } from 'lucide-react'
+import { Mail, Phone, MessageSquare, Snowflake, CreditCard, Play, XCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/shell/page-header'
 import { Button } from '@/components/ui/button'
 import { MemberStatus, RiskScore, StatusChip } from '@/components/ui/status-chip'
 import { Tag } from '@/components/ui/filter-chip'
-import { ConfirmDialog } from '@/components/ui/modal'
-import { useToast } from '@/components/ui/toast'
 import type { Member } from '@/lib/types'
 import { compactMoney, daysAgo, fullDate, money } from '@/lib/format'
 import { NOW } from '@/lib/seed'
 import { toMemberView } from '../member-view'
+import { MemberStatusDialog, MessageMemberDialog, TakePaymentDialog } from './member-actions'
+import { useStudio } from '@/lib/store/studio-store'
 
 /**
  * Profile header. Identity, the operational facts a staff member needs before
  * speaking to this person, and the actions they can take — all above the fold.
  */
 export function ProfileHeader({ member }: { member: Member }) {
-  const { toast } = useToast()
-  const [confirm, setConfirm] = React.useState<'freeze' | 'cancel' | null>(null)
+  const { busy } = useStudio()
+  const [dialog, setDialog] = React.useState<'message' | 'payment' | null>(null)
+  const [statusTarget, setStatusTarget] = React.useState<Member['status'] | null>(null)
   const view = toMemberView(member)
   const m = member.metrics
+  const frozen = member.status === 'frozen'
+  const ended = member.status === 'cancelled' || member.status === 'expired'
 
   const stale = m.daysSinceLastVisit !== null && m.daysSinceLastVisit >= 14
 
@@ -76,21 +79,40 @@ export function ProfileHeader({ member }: { member: Member }) {
         }
         actions={
           <>
-            <Button variant="secondary" size="sm">
+            <Button variant="secondary" size="sm" disabled={busy} onClick={() => setDialog('message')}>
               <MessageSquare className="size-3.5" />
               <span className="hidden sm:inline">Message</span>
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => setConfirm('freeze')}>
-              <Snowflake className="size-3.5" />
-              <span className="hidden sm:inline">Freeze</span>
-            </Button>
-            <Button variant="primary" size="sm">
+            {/* Freeze and Reactivate are the same button in two states. Showing
+                "Freeze" on an already-frozen member is what made it look broken:
+                pressing it changed nothing anyone could see. */}
+            {frozen || ended ? (
+              <Button variant="secondary" size="sm" disabled={busy} onClick={() => setStatusTarget('active')}>
+                <Play className="size-3.5" />
+                <span className="hidden sm:inline">Reactivate</span>
+              </Button>
+            ) : (
+              <Button variant="secondary" size="sm" disabled={busy} onClick={() => setStatusTarget('frozen')}>
+                <Snowflake className="size-3.5" />
+                <span className="hidden sm:inline">Freeze</span>
+              </Button>
+            )}
+            <Button variant="primary" size="sm" disabled={busy} onClick={() => setDialog('payment')}>
               <CreditCard className="size-3.5" />
               <span className="hidden sm:inline">Take payment</span>
             </Button>
-            <Button variant="ghost" size="icon-sm" aria-label="More actions">
-              <MoreHorizontal className="size-4" />
-            </Button>
+            {ended ? null : (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Cancel membership"
+                title="Cancel membership"
+                disabled={busy}
+                onClick={() => setStatusTarget('cancelled')}
+              >
+                <XCircle className="size-4" />
+              </Button>
+            )}
           </>
         }
       >
@@ -152,28 +174,14 @@ export function ProfileHeader({ member }: { member: Member }) {
         />
       </div>
 
-      <ConfirmDialog
-        open={confirm === 'freeze'}
-        onClose={() => setConfirm(null)}
-        onConfirm={() =>
-          toast({
-            tone: 'warn',
-            title: 'Membership frozen',
-            detail: `${member.name} · ${money(m.monthlyValue)}/mo paused`,
-            action: { label: 'Undo', onClick: () => {} },
-          })
-        }
-        title={`Freeze ${member.name}`}
-        confirmLabel="Freeze membership"
-        consequenceTone="danger"
-        consequence={`Billing stops and door access is revoked immediately — ${money(m.monthlyValue)} of monthly revenue is paused.`}
-      >
-        <p className="text-sm leading-relaxed text-muted-foreground">
-          {m.creditsRemaining !== null && m.creditsRemaining > 0
-            ? `${m.creditsRemaining} unused credits are retained and will be available on unfreeze.`
-            : 'Tenure and history are retained. Unfreezing restarts billing on the next cycle date.'}
-        </p>
-      </ConfirmDialog>
+      <MessageMemberDialog open={dialog === 'message'} member={member} onClose={() => setDialog(null)} />
+      <TakePaymentDialog open={dialog === 'payment'} member={member} onClose={() => setDialog(null)} />
+      <MemberStatusDialog
+        open={statusTarget !== null}
+        member={member}
+        target={statusTarget ?? 'frozen'}
+        onClose={() => setStatusTarget(null)}
+      />
     </>
   )
 }

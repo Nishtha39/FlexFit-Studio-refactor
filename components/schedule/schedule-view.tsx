@@ -24,6 +24,8 @@ import { ViewToggle } from '@/components/ui/tabs'
 import { Sheet } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { useToast } from '@/components/ui/toast'
+import { api } from '@/lib/api/client'
+import { useStudio } from '@/lib/store/studio-store'
 import {
   BookClassDialog,
   CancelBookingDialog,
@@ -77,6 +79,7 @@ export function ScheduleScreen() {
   const session = useScheduleSession()
   const { toast } = useToast()
 
+  const { mutate } = useStudio()
   const [weekStart, setWeekStart] = React.useState<Date>(THIS_WEEK)
   const [view, setView] = React.useState<View>('week')
   const [dayIso, setDayIso] = React.useState<string>(TODAY_ISO)
@@ -210,59 +213,59 @@ export function ScheduleScreen() {
     startTime: string,
   ) => {
     if (!pendingMove) return
-    const { occurrence } = pendingMove
-    session.moveClass(occurrence, iso, startTime, scope, notified)
-    const target = occurrenceStart(iso, startTime)
-    toast({
-      tone: scope === 'all' ? 'warn' : 'good',
-      title: `${occurrence.gymClass.name} moved to ${WEEKDAY_LABELS_FULL[target.getUTCDay()]} ${slotClock(target)}`,
-      detail:
-        notified === 0
-          ? 'Nobody was booked, so no notices went out.'
-          : `${notified} member${notified === 1 ? '' : 's'} notified.`,
-    })
+    // The session owns the toast now — it reports what the server actually did
+    // rather than what was asked for.
+    session.moveClass(pendingMove.occurrence, iso, startTime, scope, notified)
     setPendingMove(null)
   }
 
-  /** Undo the most recent move of this class, using its own audit entry. */
+  /** Revert a stored reschedule — one made before this page was opened. */
+  const revertStoredMove = async (id: string, className: string) => {
+    await mutate(() => api.booking.cancelMove.mutate({ id }), {
+      success: () => ({ title: `${className} put back on its original slot` }),
+    })
+  }
+
+  /**
+   * Put a rescheduled class back.
+   *
+   * Reads the stored move list rather than this session's audit log — a move
+   * made yesterday, or by somebody else, is just as revertible as one made a
+   * minute ago now that moves are persisted.
+   */
   const revertMove = (occ: Occurrence) => {
-    const entry = session.log.find(
-      (e) => e.undo && e.text.startsWith(`${occ.gymClass.name} moved to`),
-    )
-    if (!entry?.undo) {
+    const entry = session.log.find((e) => e.undo && e.text.startsWith(`${occ.gymClass.name} moved to`))
+    if (entry?.undo) {
+      entry.undo()
+      session.dropLog(entry.id)
+      return
+    }
+    const stored = session.moves.filter((m) => m.classId === occ.classId)
+    const last = stored[stored.length - 1]
+    if (!last) {
       toast({
         tone: 'neutral',
         title: 'Nothing to put back',
-        detail: 'This slot came from the published timetable, not from a move made in this session.',
+        detail: 'This slot comes from the published timetable — it has not been rescheduled.',
       })
       return
     }
-    entry.undo()
-    session.dropLog(entry.id)
-    toast({ tone: 'neutral', title: `${occ.gymClass.name} put back on its original slot` })
+    void revertStoredMove(last.id, occ.gymClass.name)
   }
 
   /* ---------------------------------------------------------------------- */
   /* Booking actions                                                        */
   /* ---------------------------------------------------------------------- */
 
-  const onBookConfirm = (occ: Occurrence) => (memberId: ID, asWaitlist: boolean) => {
-    if (asWaitlist) session.joinWaitlist(occ, memberId)
-    else session.book(occ, memberId)
-    toast({
-      tone: asWaitlist ? 'info' : 'good',
-      title: asWaitlist ? 'Added to the waitlist' : `Booked into ${occ.gymClass.name}`,
-      detail: `${slotDate(occ.start)} at ${slotClock(occ.start)}.`,
-    })
+  // Both of these now report what the server did, from inside the session — a
+  // booking that landed on the waitlist because the class filled up in the
+  // meantime must not toast "Booked into …".
+  const onBookConfirm = (occ: Occurrence) => (memberId: ID, _asWaitlist: boolean) => {
+    session.book(occ, memberId)
   }
 
   const onCancelConfirm = (occ: Occurrence) => (memberId: ID, forfeited: boolean) => {
     session.cancel(occ, memberId, forfeited)
-    toast({
-      tone: forfeited ? 'danger' : 'neutral',
-      title: forfeited ? 'Late cancel recorded · credit forfeited' : 'Booking cancelled · credit returned',
-      detail: `${occ.gymClass.name} · ${slotDate(occ.start)}.`,
-    })
   }
 
   const logCount = session.log.length
@@ -578,10 +581,7 @@ export function ScheduleScreen() {
                 onRevertMove={selected.moved ? () => revertMove(selected) : undefined}
                 onCancelMember={(member) => setCancelling({ occ: selected, member })}
                 onRescheduleMember={(member) => setMoving({ occ: selected, member })}
-                onPromote={(memberId) => {
-                  session.promote(selected, memberId)
-                  toast({ tone: 'good', title: 'Promoted from the waitlist' })
-                }}
+                onPromote={(memberId) => session.promote(selected, memberId)}
                 onDropWaitlist={(memberId) => session.dropFromWaitlist(selected, memberId)}
               />
             ) : (
@@ -623,7 +623,6 @@ export function ScheduleScreen() {
                   onClick={() => {
                     session.revertAll()
                     setLogOpen(false)
-                    toast({ tone: 'neutral', title: 'Session reset to the published timetable' })
                   }}
                 >
                   <Undo2 className="size-3" />
@@ -741,16 +740,9 @@ export function ScheduleScreen() {
           options={rescheduleOptions}
           rosterFor={session.rosterFor}
           waitlistFor={session.waitlistFor}
-          onConfirm={(target, asWaitlist, forfeited) => {
+          onConfirm={(target, asWaitlist, forfeited) =>
             session.moveBooking(moving.occ, target, moving.member.id, asWaitlist, forfeited)
-            toast({
-              tone: forfeited ? 'danger' : asWaitlist ? 'warn' : 'good',
-              title: asWaitlist
-                ? `${moving.member.firstName} waitlisted for ${target.gymClass.name}`
-                : `${moving.member.firstName} moved to ${target.gymClass.name}`,
-              detail: `${slotDate(target.start)} at ${slotClock(target.start)}${forfeited ? ' · original credit forfeited' : ''}.`,
-            })
-          }}
+          }
         />
       ) : null}
 

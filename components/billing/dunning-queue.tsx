@@ -10,8 +10,22 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/modal'
 import { RiskScore, StatusChip } from '@/components/ui/status-chip'
 import { EmptyState } from '@/components/ui/empty-state'
-import { CellStack, Table, TableWrap, Tbody, Td, Th, Thead, Tr } from '@/components/ui/table'
-import { useToast } from '@/components/ui/toast'
+import {
+  CellStack,
+  SerialTd,
+  SerialTh,
+  Table,
+  TableWrap,
+  Tbody,
+  Td,
+  Th,
+  Thead,
+  Tr,
+} from '@/components/ui/table'
+import { api } from '@/lib/api/client'
+import { useDataVersion, useStudio } from '@/lib/store/studio-store'
+import { stateOf } from '@/lib/data/work-items'
+import { paymentById } from '@/lib/data/payments'
 import { compactMoney, money, num, shortDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { BillingTabs } from './billing-tabs'
@@ -23,28 +37,80 @@ import { DUNNING_LADDER, dunningQueue, invoices, type DunningItem } from './bill
  * can spend their calls on the invoices that matter.
  */
 export function DunningQueue() {
-  const { toast } = useToast()
-  const all = React.useMemo(() => dunningQueue(), [])
-  const [resolved, setResolved] = React.useState<string[]>([])
+  const { mutate, busy } = useStudio()
+  const version = useDataVersion()
+  const all = React.useMemo(() => dunningQueue(), [version])
   const [pauseTarget, setPauseTarget] = React.useState<DunningItem | null>(null)
   const [rung, setRung] = React.useState<string>('all')
 
-  const open = all.filter((i) => !resolved.includes(i.invoice.id))
+  // A row leaves the queue because somebody dealt with it, which is a stored
+  // fact — not because this component forgot about it. `work_items` holds it,
+  // so the row is still gone after a reload and gone for everyone else too.
+  const open = React.useMemo(
+    () => all.filter((i) => stateOf(`dun-${i.invoice.id}`).status === 'open'),
+    [all, version],
+  )
   const rows = rung === 'all' ? open : open.filter((i) => i.step.id === rung)
   const atStake = open.reduce((s, i) => s + i.invoice.amount, 0)
   const recoverable = open.reduce((s, i) => s + i.monthlyValue, 0)
 
-  const resolve = (item: DunningItem, label: string, detail: string) => {
-    setResolved((prev) => [...prev, item.invoice.id])
-    toast({
-      tone: 'good',
-      title: label,
-      detail,
-      action: {
-        label: 'Undo',
-        onClick: () => setResolved((prev) => prev.filter((id) => id !== item.invoice.id)),
+  /**
+   * Every rung does two writes: the action itself (a retry attempt, a call
+   * logged, access actually paused) and the note that this row has been
+   * handled. They are separate on purpose — pausing access changes the member,
+   * whereas "handled" is a fact about the queue, and conflating them is how the
+   * queue ends up disagreeing with the membership.
+   */
+  const act = async (
+    item: DunningItem,
+    action: 'retry' | 'called' | 'access-paused',
+    label: string,
+    detail: string,
+  ) => {
+    await mutate(
+      async () => {
+        if (action === 'retry') {
+          // `retry` reattempts a specific failed payment row, not an invoice —
+          // the ladder counts attempts per invoice, so the row is what carries
+          // the attempt number. Take the most recent failure on this invoice.
+          const failed = [...item.invoice.paymentIds]
+            .map((id) => paymentById.get(id))
+            .filter((p): p is NonNullable<typeof p> => Boolean(p) && p!.status === 'failed')
+            .sort((a, b) => (a.date < b.date ? 1 : -1))[0]
+          if (!failed) throw new Error('No failed payment on this invoice to retry.')
+          await api.billing.retry.mutate({ paymentId: failed.id })
+        } else {
+          await api.billing.dunningAction.mutate({
+            invoiceId: item.invoice.id,
+            memberId: item.invoice.memberId,
+            action: action === 'called' ? 'called' : 'access-paused',
+          })
+        }
+        return api.queue.setState.mutate({
+          id: `dun-${item.invoice.id}`,
+          queue: 'dunning',
+          status: 'done',
+          resolution: label,
+        })
       },
-    })
+      {
+        success: () => ({
+          title: label,
+          detail,
+          // The clear is stored now, so Undo has to write too rather than just
+          // dropping an id out of a local array.
+          action: { label: 'Undo', onClick: () => void reopen(item) },
+        }),
+      },
+    )
+  }
+
+  const reopen = async (item: DunningItem) => {
+    await mutate(
+      () =>
+        api.queue.setState.mutate({ id: `dun-${item.invoice.id}`, queue: 'dunning', status: 'open' }),
+      { success: () => ({ title: 'Back in the queue', detail: item.invoice.id }) },
+    )
   }
 
   return (
@@ -78,9 +144,9 @@ export function DunningQueue() {
             footnote="What lapses if recovery fails"
           />
           <KpiTile
-            label="Cleared today"
-            value={num(resolved.length)}
-            footnote={resolved.length === 0 ? 'Nothing cleared yet' : 'Undo is available in the toast'}
+            label="Cleared"
+            value={num(all.length - open.length)}
+            footnote={all.length === open.length ? 'Nothing cleared yet' : 'Handled and off the queue'}
           />
         </Card>
 
@@ -154,6 +220,7 @@ export function DunningQueue() {
               <Table>
                 <Thead>
                   <tr>
+                    <SerialTh />
                     <Th>Member</Th>
                     <Th width={110}>Invoice</Th>
                     <Th align="right" width={110}>Amount</Th>
@@ -165,8 +232,9 @@ export function DunningQueue() {
                   </tr>
                 </Thead>
                 <Tbody>
-                  {rows.map((item) => (
+                  {rows.map((item, i) => (
                     <Tr key={item.invoice.id}>
+                      <SerialTd index={i} />
                       <Td>
                         <CellStack
                           primary={
@@ -207,9 +275,11 @@ export function DunningQueue() {
                           <Button
                             variant="secondary"
                             size="xs"
+                            disabled={busy}
                             onClick={() =>
-                              resolve(
+                              act(
                                 item,
+                                'retry',
                                 'Retry queued',
                                 `${item.invoice.memberName} — ${money(item.invoice.amount)} on the saved ${item.invoice.method.toUpperCase()}.`,
                               )
@@ -221,9 +291,11 @@ export function DunningQueue() {
                           <Button
                             variant="secondary"
                             size="xs"
+                            disabled={busy}
                             onClick={() =>
-                              resolve(
+                              act(
                                 item,
+                                'called',
                                 'Logged as called',
                                 `Call logged against ${item.invoice.id}. Ladder pauses 48h while they fix the card.`,
                               )
@@ -255,10 +327,13 @@ export function DunningQueue() {
         onClose={() => setPauseTarget(null)}
         onConfirm={() => {
           if (!pauseTarget) return
-          resolve(
-            pauseTarget,
+          const target = pauseTarget
+          setPauseTarget(null)
+          void act(
+            target,
+            'access-paused',
             'Access paused',
-            `${pauseTarget.invoice.memberName} can't check in until ${pauseTarget.invoice.id} clears. Membership is intact.`,
+            `${target.invoice.memberName} can't check in until ${target.invoice.id} clears. Membership is intact.`,
           )
         }}
         title="Pause check-in access?"

@@ -77,6 +77,7 @@ export type ScreenKey =
   | 'corporate'
   | 'leads'
   | 'trainers'
+  | 'equipment'
   | 'reports'
   | 'notifications'
   | 'portal'
@@ -95,6 +96,7 @@ const PERMISSIONS: Record<Role, ScreenKey[]> = {
     'corporate',
     'leads',
     'trainers',
+    'equipment',
     'reports',
     'notifications',
     'settings',
@@ -106,10 +108,14 @@ const PERMISSIONS: Record<Role, ScreenKey[]> = {
     'schedule',
     'leads',
     'payments',
+    'equipment',
     'notifications',
   ],
-  trainer: ['my_schedule', 'members', 'check_in', 'notifications'],
-  member: ['portal', 'notifications'],
+  // Equipment is on all three of the non-owner roles for different reasons: the
+  // trainer reports the fault, the member checks what is working before coming
+  // in and books the sauna, and the front desk fields "is the court free?".
+  trainer: ['my_schedule', 'members', 'check_in', 'equipment', 'notifications'],
+  member: ['portal', 'equipment', 'notifications'],
 }
 
 interface AppState {

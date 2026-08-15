@@ -18,12 +18,18 @@
 import type {
   AppNotification,
   Company,
+  Equipment,
+  EquipmentFault,
+  EquipmentReservation,
+  EquipmentService,
   GymClass,
   Lead,
   Member,
+  MemberNote,
   Payment,
   Plan,
   Staff,
+  WorkItem,
 } from '../../lib/types'
 import { computeRisk } from '../../lib/risk'
 import { NOW, daysBetween } from '../../lib/seed'
@@ -206,5 +212,101 @@ export function toNotification(r: Row): AppNotification {
     timestamp: r.timestamp as string,
     read: Boolean(r.read),
     entity: entityType && entityId ? { type: entityType, id: entityId } : null,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Equipment
+// ---------------------------------------------------------------------------
+// Nothing derived here: book value, next-service date and utilisation are
+// formulas in components/equipment/equipment-data.ts, shared by the browser and
+// the verification suite, so there is exactly one definition of each.
+
+export function toEquipment(r: Row): Equipment {
+  return {
+    id: r.id as string,
+    name: r.name as string,
+    category: r.category as Equipment['category'],
+    make: r.make as string,
+    model: r.model as string,
+    assetTag: r.assetTag as string,
+    location: r.location as Equipment['location'],
+    zone: r.zone as string,
+    quantity: r.quantity as number,
+    status: r.status as Equipment['status'],
+    purchaseDate: r.purchaseDate as string,
+    unitCost: r.unitCost as number,
+    usefulLifeMonths: r.usefulLifeMonths as number,
+    serviceIntervalDays: r.serviceIntervalDays as number,
+    lastServiceDate: (r.lastServiceDate ?? null) as string | null,
+    bookable: Boolean(r.bookable),
+    slotMinutes: r.slotMinutes as number,
+    notes: (r.notes ?? '') as string,
+  }
+}
+
+export function toEquipmentFault(r: Row): EquipmentFault {
+  return {
+    id: r.id as string,
+    equipmentId: r.equipmentId as string,
+    reportedBy: r.reportedBy as string,
+    reporterName: r.reporterName as string,
+    reportedAt: r.reportedAt as string,
+    severity: r.severity as EquipmentFault['severity'],
+    summary: r.summary as string,
+    status: r.status as EquipmentFault['status'],
+    resolvedAt: (r.resolvedAt ?? null) as string | null,
+    resolutionNote: (r.resolutionNote ?? null) as string | null,
+  }
+}
+
+export function toEquipmentService(r: Row): EquipmentService {
+  return {
+    id: r.id as string,
+    equipmentId: r.equipmentId as string,
+    date: r.date as string,
+    kind: r.kind as EquipmentService['kind'],
+    vendor: r.vendor as string,
+    cost: r.cost as number,
+    note: (r.note ?? '') as string,
+  }
+}
+
+export function toEquipmentReservation(r: Row): EquipmentReservation {
+  return {
+    id: r.id as string,
+    equipmentId: r.equipmentId as string,
+    memberId: r.memberId as string,
+    date: r.date as string,
+    startTime: r.startTime as string,
+    durationMin: r.durationMin as number,
+    status: r.status as EquipmentReservation['status'],
+    createdAt: r.createdAt as string,
+  }
+}
+
+export function toMemberNote(r: Row): MemberNote {
+  return {
+    id: r.id as string,
+    memberId: r.memberId as string,
+    kind: r.kind as MemberNote['kind'],
+    body: r.body as string,
+    authorId: r.authorId as string,
+    timestamp: r.timestamp as string,
+    pinned: Boolean(r.pinned),
+  }
+}
+
+export function toWorkItem(r: Row): WorkItem {
+  return {
+    id: r.id as string,
+    queue: r.queue as WorkItem['queue'],
+    status: r.status as WorkItem['status'],
+    assigneeId: (r.assigneeId ?? null) as string | null,
+    snoozedUntil: (r.snoozedUntil ?? null) as string | null,
+    resolution: (r.resolution ?? null) as string | null,
+    note: (r.note ?? null) as string | null,
+    updatedAt: r.updatedAt as string,
+    updatedBy: r.updatedBy as string,
   }
 }

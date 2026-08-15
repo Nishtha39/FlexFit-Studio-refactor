@@ -4,6 +4,7 @@ import { checkInsByMember } from '@/lib/data/attendance'
 import { paymentsForMember } from '@/lib/data/payments'
 import { classes } from '@/lib/data/classes'
 import { staff, activeTrainers, getStaff } from '@/lib/data/staff'
+import { notesFor as notesForMember } from '@/lib/data/notes'
 import { getPlan } from '@/lib/data/plans'
 
 /**
@@ -27,100 +28,14 @@ function rngForMember(id: string) {
 /* Notes                                                                       */
 /* -------------------------------------------------------------------------- */
 
-export type NoteKind = 'note' | 'call' | 'injury' | 'goal' | 'complaint'
-
-export interface MemberNote {
-  id: string
-  kind: NoteKind
-  body: string
-  authorId: string
-  timestamp: string
-  /** Pinned notes surface at check-in — injuries and access issues. */
-  pinned: boolean
-}
-
-const NOTE_TEMPLATES: Record<NoteKind, string[]> = {
-  note: [
-    'Prefers morning slots. Asked about the 6:30am Strength block.',
-    'Travels for work most of the last week of the month.',
-    'Wants to be told when a Reformer Pilates slot opens up.',
-  ],
-  call: [
-    'Called about the failed card. Said they would update it by the weekend.',
-    'Left a voicemail on the retention follow-up. No callback yet.',
-    'Spoke about the plan downgrade — wants to think about it for a week.',
-  ],
-  injury: [
-    'Right shoulder impingement. Avoid overhead pressing until cleared.',
-    'Recovering from a knee strain. No plyometrics for 4 weeks.',
-    'Lower back flare-up. Cleared for mobility and spin only.',
-  ],
-  goal: [
-    'Target: first unassisted pull-up by the end of the quarter.',
-    'Training for a 10k in November. Wants two conditioning sessions a week.',
-    'Goal is consistency — three visits a week, not intensity.',
-  ],
-  complaint: [
-    'Reported the Riverside showers running cold on weekday evenings.',
-    'Unhappy the 18:30 HIIT slot is always full by Monday.',
-    'Flagged that the app double-charged a drop-in in June.',
-  ],
-}
-
-export function notesFor(member: Member): MemberNote[] {
-  const rng = rngForMember(`${member.id}:notes`)
-  const out: MemberNote[] = []
-
-  // Injury notes are pinned and always come first when present.
-  if (rng.bool(0.28)) {
-    out.push({
-      id: `${member.id}-n-injury`,
-      kind: 'injury',
-      body: rng.pick(NOTE_TEMPLATES.injury),
-      authorId: rng.pick(activeTrainers).id,
-      timestamp: isoStamp(addDays(NOW, -rng.int(5, 90))),
-      pinned: true,
-    })
-  }
-
-  if (member.metrics.failedPayments > 0) {
-    out.push({
-      id: `${member.id}-n-call`,
-      kind: 'call',
-      body: rng.pick(NOTE_TEMPLATES.call),
-      authorId: 'staff-manager',
-      timestamp: isoStamp(addDays(NOW, -rng.int(2, 20))),
-      pinned: false,
-    })
-  }
-
-  const extra = rng.int(1, 3)
-  const kinds: NoteKind[] = ['note', 'goal', 'complaint']
-  for (let i = 0; i < extra; i++) {
-    const kind = rng.pick(kinds)
-    out.push({
-      id: `${member.id}-n-${i}`,
-      kind,
-      body: rng.pick(NOTE_TEMPLATES[kind]),
-      authorId: rng.pick(staff).id,
-      timestamp: isoStamp(addDays(NOW, -rng.int(3, 240))),
-      pinned: false,
-    })
-  }
-
-  return out.sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
-    return a.timestamp < b.timestamp ? 1 : -1
-  })
-}
-
-export const NOTE_META: Record<NoteKind, { label: string; tone: 'danger' | 'warn' | 'info' | 'neutral' | 'good' }> = {
-  injury: { label: 'Injury', tone: 'danger' },
-  complaint: { label: 'Complaint', tone: 'warn' },
-  call: { label: 'Call', tone: 'info' },
-  goal: { label: 'Goal', tone: 'good' },
-  note: { label: 'Note', tone: 'neutral' },
-}
+/**
+ * Notes moved to `lib/data/notes.ts` when they gained a table — they are an
+ * entity now, not a derivation. Re-exported here so the profile screens that
+ * already import them from this module keep working.
+ */
+export { NOTE_META, sortNotes } from '@/lib/data/notes'
+export { notesFor } from '@/lib/data/notes'
+export type { MemberNote, NoteKind } from '@/lib/types'
 
 /* -------------------------------------------------------------------------- */
 /* Programs — the member's booked classes and assigned trainer work            */
@@ -234,7 +149,7 @@ export function timelineFor(member: Member): TimelineEvent[] {
   }
 
   // Notes appear in the feed as well as in their own tab.
-  for (const note of notesFor(member)) {
+  for (const note of notesForMember(member.id)) {
     out.push({
       id: `${member.id}-t-${note.id}`,
       kind: note.kind === 'injury' ? 'injury' : note.kind === 'call' ? 'call' : 'note',

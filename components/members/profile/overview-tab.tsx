@@ -28,7 +28,7 @@ export function OverviewTab({ member, onTab }: { member: Member; onTab: (id: str
   const m = member.metrics
   const plan = getPlan(member.planId)
   const company = member.companyId ? getCompany(member.companyId) : null
-  const notes = React.useMemo(() => notesFor(member), [member])
+  const notes = React.useMemo(() => notesFor(member.id), [member])
   const pinned = notes.filter((n) => n.pinned)
   const programs = React.useMemo(() => programsFor(member), [member])
   const weekly = React.useMemo(() => weeklyCheckInCounts(member.id, 12), [member.id])

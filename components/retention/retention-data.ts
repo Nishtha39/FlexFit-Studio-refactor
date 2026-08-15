@@ -9,9 +9,10 @@ import { bandForScore } from '@/lib/risk'
 import type { Member, RiskBand, RiskFactor } from '@/lib/types'
 
 /** Only members you can still save. Cancelled/expired belong to win-back, not retention. */
-export const retentionPool: Member[] = allMembers.filter(
-  (m) => m.status === 'active' || m.status === 'trial' || m.status === 'frozen',
-)
+const buildPool = () =>
+  allMembers.filter((m) => m.status === 'active' || m.status === 'trial' || m.status === 'frozen')
+
+export let retentionPool: Member[] = buildPool()
 
 /* -------------------------------------------------------------------------- */
 /*  Distribution                                                              */
@@ -127,9 +128,9 @@ function buildMovements(): Movements {
   return { entering, leaving }
 }
 
-const movements = buildMovements()
-export const enteringRisk = movements.entering
-export const leavingRisk = movements.leaving
+let movements = buildMovements()
+export let enteringRisk = movements.entering
+export let leavingRisk = movements.leaving
 
 /* -------------------------------------------------------------------------- */
 /*  Intervention queue — risk × value                                         */
@@ -224,11 +225,28 @@ function buildQueue(): InterventionItem[] {
   return items
 }
 
-export const interventionQueue: InterventionItem[] = buildQueue()
+export let interventionQueue: InterventionItem[] = buildQueue()
 
-export const assignableStaff = staff.filter(
-  (s) => s.active && (s.role === 'trainer' || s.role === 'front-desk' || s.role === 'manager'),
-)
+const buildAssignable = () =>
+  staff.filter(
+    (s) => s.active && (s.role === 'trainer' || s.role === 'front-desk' || s.role === 'manager'),
+  )
+
+export let assignableStaff = buildAssignable()
+
+/**
+ * Recompute the retention screen. A freeze or a cancellation moves a member in
+ * or out of the savable pool, which changes the distribution, the movement
+ * lists and the queue — all three, or the screen contradicts itself.
+ */
+export function rebuild(): void {
+  retentionPool = buildPool()
+  movements = buildMovements()
+  enteringRisk = movements.entering
+  leavingRisk = movements.leaving
+  interventionQueue = buildQueue()
+  assignableStaff = buildAssignable()
+}
 
 export const SNOOZE_OPTIONS = [
   { days: 3, label: '3 days' },

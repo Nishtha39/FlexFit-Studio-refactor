@@ -21,28 +21,41 @@ import { publicProcedure, router } from '../init'
 import {
   attendanceMatrix,
   checkIns,
+  classMoves,
   classSeats,
   classes,
   companies,
   dailyAttendance,
+  equipment,
+  equipmentFaults,
+  equipmentReservations,
+  equipmentServices,
   leads,
   locations,
+  memberNotes,
   members,
   notifications,
   payments,
   plans,
   settings,
   staff,
+  workItems,
 } from '../../db/schema'
 import {
   toClass,
   toCompany,
+  toEquipment,
+  toEquipmentFault,
+  toEquipmentReservation,
+  toEquipmentService,
   toLead,
   toMember,
+  toMemberNote,
   toNotification,
   toPayment,
   toPlan,
   toStaff,
+  toWorkItem,
   type SeatRow,
 } from '../../domain/mappers'
 
@@ -66,6 +79,13 @@ export const readRouter = router({
       matrixRows,
       settingRows,
       recentRows,
+      equipmentRows,
+      faultRows,
+      serviceRows,
+      reservationRows,
+      noteRows,
+      workItemRows,
+      moveRows,
     ] = await Promise.all([
       db.select().from(locations),
       db.select().from(plans),
@@ -83,6 +103,23 @@ export const readRouter = router({
       // The kiosk shows a short "recently checked in" strip; 200 rows covers it
       // without shipping the archive.
       db.select().from(checkIns).orderBy(desc(checkIns.timestamp)).limit(200),
+      // Equipment ships whole. The register is ~50 rows and its fault/service
+      // logs are small; the screens cross-reference all four (an asset's status
+      // is only explicable next to its open faults), so splitting them into
+      // per-screen queries would cost more round trips than it saves bytes.
+      db.select().from(equipment),
+      db.select().from(equipmentFaults).orderBy(desc(equipmentFaults.reportedAt)),
+      db.select().from(equipmentServices).orderBy(desc(equipmentServices.date)),
+      db.select().from(equipmentReservations),
+      // Notes are ~900 rows of short text. The profile screen needs one
+      // member's, but the overview card and the kiosk both need pinned notes
+      // across members, so they ship whole rather than per-member.
+      db.select().from(memberNotes).orderBy(desc(memberNotes.timestamp)),
+      // Only rows somebody has acted on exist at all, so this stays small.
+      db.select().from(workItems),
+      // Reschedules, oldest first — the engine applies them in order and lets
+      // the last one win.
+      db.select().from(classMoves).orderBy(classMoves.createdAt),
     ])
 
     const seats = seatRows as unknown as SeatRow[]
@@ -114,6 +151,20 @@ export const readRouter = router({
       dailyAttendance: dailyRows,
       attendanceMatrix: heatmap,
       recentCheckIns: recentRows,
+      equipment: equipmentRows.map(toEquipment),
+      equipmentFaults: faultRows.map(toEquipmentFault),
+      equipmentServices: serviceRows.map(toEquipmentService),
+      equipmentReservations: reservationRows.map(toEquipmentReservation),
+      memberNotes: noteRows.map(toMemberNote),
+      workItems: workItemRows.map(toWorkItem),
+      classMoves: moveRows.map((m) => ({
+        id: m.id,
+        classId: m.classId,
+        scope: m.scope,
+        fromIso: m.fromIso,
+        toIso: m.toIso,
+        toStartTime: m.toStartTime,
+      })),
       settings: Object.fromEntries(settingRows.map((s) => [s.key, s.value])),
     }
   }),
