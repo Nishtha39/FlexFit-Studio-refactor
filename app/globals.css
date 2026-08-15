@@ -174,6 +174,126 @@
   scrollbar-color: var(--border-strong) transparent;
 }
 
+/* ==========================================================================
+   v2 design — the marketing/auth/dashboard surface merged in from the
+   standalone UI build.
+
+   Both designs name their tokens the same (--background, --primary, --border,
+   the text scale, the radii) but give them different values: this one is a
+   warm, roomy marketing palette, the back office above is a dense light-only
+   one. Redefining them globally would repaint all 25 back-office screens, so
+   the v2 values are scoped to `.v2-scope` and cascade only to the subtree that
+   opts in. Anything outside it keeps the tokens declared in :root above.
+   ========================================================================== */
+
+@theme inline {
+  /* Brand ramp — only the v2 surface references these, but the utility classes
+     (bg-brand, text-ink, …) have to be generated globally to exist at all. */
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+  --color-lime: var(--lime);
+  --color-sky: var(--sky);
+  --color-ink: var(--ink);
+  --color-ink-foreground: var(--ink-foreground);
+  --color-chart-5: var(--chart-5);
+
+  --font-display: var(--font-outfit), var(--font-inter), ui-sans-serif, sans-serif;
+
+  /* Literal rather than calc(var(--radius) * n): --radius only exists inside
+     .v2-scope, and an undefined var here would break the utility everywhere. */
+  --radius-xl: 1.3125rem;
+  --radius-2xl: 1.75rem;
+  --radius-3xl: 2.40625rem;
+}
+
+.v2-scope {
+  --brand: #5880da;
+  --brand-soft: #eef3fd;
+  --lime: #c9f17e;
+  --sky: #bcdbfa;
+  --ink: #14161a;
+  --ink-foreground: #ffffff;
+
+  --background: #f7f9f5;
+  --foreground: #14161a;
+  --surface: #ffffff;
+  --card: #ffffff;
+  --card-foreground: #14161a;
+  --popover: #ffffff;
+  --popover-foreground: #14161a;
+
+  --primary: #14161a;
+  --primary-foreground: #ffffff;
+  --primary-hover: #2b2f36;
+  --primary-soft: #eef3fd;
+
+  --secondary: #f1f3ef;
+  --secondary-foreground: #14161a;
+  --muted: #f1f3ef;
+  --muted-foreground: #6b7280;
+  --subtle: #f7f9f5;
+  --accent: #eef3fd;
+  --accent-foreground: #2f4f9e;
+
+  --danger: #dc5a4b;
+  --border: #e6e9e3;
+  --border-strong: #d3d8cd;
+  --input: #e0e3dd;
+  --ring: #5880da;
+
+  --chart-1: #5880da;
+  --chart-2: #c9f17e;
+  --chart-3: #bcdbfa;
+  --chart-4: #8aa9e6;
+  --chart-5: #a3b8a0;
+
+  --sidebar: #ffffff;
+  --sidebar-foreground: #14161a;
+  --sidebar-accent: #f1f3ef;
+  --sidebar-accent-foreground: #14161a;
+  --sidebar-border: #e6e9e3;
+  --sidebar-ring: #5880da;
+
+  --radius: 0.875rem;
+  --radius-sm: 0.4375rem;
+  --radius-md: 0.65625rem;
+  --radius-lg: 0.875rem;
+
+  /* The back office runs a deliberately dense 6-step scale (13px body). The v2
+     screens were drawn against stock Tailwind sizes, so restore those here or
+     the marketing type renders a size and a half too small. */
+  --text-micro: 0.75rem;
+  --text-micro--line-height: 1rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+
+  background-color: var(--background);
+  color: var(--foreground);
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
+}
+
+/* Faint dotted paper behind the v2 hero and auth panels. */
+.bg-dotted {
+  background-image: radial-gradient(var(--border) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.text-gradient-ink {
+  background: linear-gradient(180deg, var(--ink) 0%, #4b5563 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
 /* ---------------------------------------------------------------------------
  * Print
  *
