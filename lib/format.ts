@@ -1,5 +1,7 @@
 /** Shared formatters. Every number that lands in a table goes through here. */
 
+import { NOW } from '@/lib/seed'
+
 /**
  * Locale is fixed to en-IN / INR so amounts group the Indian way
  * (₹4,82,500 — not ₹482,500) and never shift with the viewer's machine.
@@ -115,7 +117,16 @@ export function deadlineStamp(v: Date | string | number) {
   return `${clock(d)}, ${weekday(d)} ${dayFmt.format(d)} ${monthOnlyFmt.format(d)}`
 }
 
-export function daysAgo(v: Date | string | number, now = new Date()) {
+/**
+ * Relative time, measured against the dataset's fixed instant — NOT the wall
+ * clock. Every date in this app is seeded relative to `NOW`, and the pages are
+ * statically exported, so a wall-clock default is wrong twice over: the value
+ * baked into the HTML at build time drifts out of date as real days pass, and
+ * it disagrees with what the browser computes at hydration (React error #418).
+ * Callers may still pass an explicit `now` where a genuinely live reading is
+ * wanted.
+ */
+export function daysAgo(v: Date | string | number, now: Date = NOW) {
   const diff = Math.floor((now.getTime() - toDate(v).getTime()) / 86_400_000)
   if (diff <= 0) return 'today'
   if (diff === 1) return 'yesterday'
@@ -124,7 +135,8 @@ export function daysAgo(v: Date | string | number, now = new Date()) {
   return `${Math.floor(diff / 365)}y ago`
 }
 
-export function tenure(joined: Date | string | number, now = new Date()) {
+/** Same fixed-clock rule as `daysAgo`. */
+export function tenure(joined: Date | string | number, now: Date = NOW) {
   const months = Math.max(
     0,
     Math.floor((now.getTime() - toDate(joined).getTime()) / (86_400_000 * 30.44)),
