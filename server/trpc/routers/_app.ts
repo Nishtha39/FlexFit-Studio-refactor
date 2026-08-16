@@ -4,6 +4,7 @@
  * any one of those tables would have scattered the rule.
  */
 import { router } from '../init'
+import { authRouter } from './auth'
 import { readRouter } from './read'
 import { bookingRouter } from './booking'
 import { billingRouter } from './billing'
@@ -14,6 +15,7 @@ import { commsRouter } from './comms'
 import { queueRouter } from './queue'
 
 export const appRouter = router({
+  auth: authRouter,
   read: readRouter,
   booking: bookingRouter,
   billing: billingRouter,

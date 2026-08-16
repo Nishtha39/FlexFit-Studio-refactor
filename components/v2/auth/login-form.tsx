@@ -8,6 +8,8 @@ import { Button } from '@/components/v2/ui/button'
 import { Checkbox } from '@/components/v2/ui/checkbox'
 import { Input } from '@/components/v2/ui/input'
 import { Label } from '@/components/v2/ui/label'
+import { api } from '@/lib/api/client'
+import { writeSession } from '@/lib/auth/session'
 
 interface FieldErrors {
   email?: string
@@ -17,9 +19,13 @@ interface FieldErrors {
 /**
  * Sign-in form.
  *
- * Validation is client-side only for now. The submit handler is the single
- * place to swap in the tRPC `auth.signIn` mutation once the router exists —
- * the field state, error rendering and pending UI all stay as they are.
+ * Client-side validation catches the empty and malformed cases so the round
+ * trip is not spent on them; the server re-checks everything regardless, since
+ * nothing arriving from a browser is trustworthy.
+ *
+ * Where it lands is the account's business, not this form's: the server returns
+ * the role's landing screen, so an owner goes to /dashboard and a member to
+ * /portal without this file knowing the mapping.
  */
 export function LoginForm() {
   const router = useRouter()
@@ -27,6 +33,7 @@ export function LoginForm() {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<FieldErrors>({})
+  const [formError, setFormError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
 
   function validate(): FieldErrors {
@@ -49,13 +56,35 @@ export function LoginForm() {
     if (Object.keys(found).length > 0) return
 
     setPending(true)
-    // Placeholder for the real mutation; keeps the pending state observable.
-    await new Promise((resolve) => setTimeout(resolve, 600))
-    router.push('/dashboard')
+    setFormError(null)
+    try {
+      const { token, user } = await api.auth.signIn.mutate({ email, password })
+      writeSession({ token, user })
+      router.push(user.landing)
+    } catch (error) {
+      // One message for a wrong password and an unknown address alike — the
+      // server refuses to distinguish them, and echoing its wording keeps that
+      // promise instead of quietly leaking which it was.
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : 'Could not sign in. Please try again.',
+      )
+      setPending(false)
+    }
   }
 
   return (
     <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
+      {formError && (
+        <p
+          role="alert"
+          className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+        >
+          {formError}
+        </p>
+      )}
+
       <div className="flex flex-col gap-2">
         <Label htmlFor="email" className="text-sm">
           Work email

@@ -15,6 +15,7 @@
  */
 import { createTRPCClient, httpBatchLink } from '@trpc/client'
 import type { AppRouter } from '@/server/trpc/routers/_app'
+import { sessionToken } from '@/lib/auth/session'
 
 /** Where the Worker mounts the router. Must match `API_PREFIX` in worker/index.ts. */
 const ENDPOINT = '/api/trpc'
@@ -29,7 +30,13 @@ export const api = createTRPCClient<AppRouter>({
        * who did something, and is deliberately NOT trusted for authorisation.
        */
       headers() {
-        return { 'x-flexfit-actor': currentActor }
+        const token = sessionToken()
+        return {
+          'x-flexfit-actor': currentActor,
+          // Sent when there is one. Unlike the actor header this is checkable:
+          // the auth router resolves it against the sessions table.
+          ...(token ? { 'x-flexfit-session': token } : {}),
+        }
       },
     }),
   ],

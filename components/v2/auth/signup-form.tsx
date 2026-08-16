@@ -8,6 +8,8 @@ import { Button } from '@/components/v2/ui/button'
 import { Checkbox } from '@/components/v2/ui/checkbox'
 import { Input } from '@/components/v2/ui/input'
 import { Label } from '@/components/v2/ui/label'
+import { api } from '@/lib/api/client'
+import { writeSession } from '@/lib/auth/session'
 import { cn } from '@/lib/v2/utils'
 
 interface FieldErrors {
@@ -31,10 +33,27 @@ function scorePassword(value: string): { score: number; label: string } {
 }
 
 /**
+ * The four roles an account can hold, in the order they are offered.
+ *
+ * Member first because it is much the commonest signup, and because the two
+ * fields above the picker ask about a gym — which reads oddly to someone
+ * joining one rather than running one, so the form hides them for that choice.
+ */
+const ROLE_CHOICES = [
+  { id: 'member', label: 'Member', hint: 'Book classes and manage my membership' },
+  { id: 'trainer', label: 'Trainer', hint: 'See my schedule and my clients' },
+  { id: 'front_desk', label: 'Front desk', hint: 'Check members in and take payments' },
+  { id: 'owner', label: 'Owner', hint: 'Full access to every screen and report' },
+] as const
+
+type RoleChoice = (typeof ROLE_CHOICES)[number]['id']
+
+/**
  * Account creation form.
  *
- * Same contract as the login form: validate here, then hand off to the tRPC
- * `auth.signUp` mutation when the backend lands.
+ * Validates here for fast feedback and again on the server, which is the copy
+ * that counts. Where the new account lands is decided by its role, and the
+ * server returns that destination rather than this form deciding it.
  */
 export function SignupForm() {
   const router = useRouter()
@@ -42,24 +61,31 @@ export function SignupForm() {
   const [gym, setGym] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [role, setRole] = useState<RoleChoice>('member')
   const [accepted, setAccepted] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<FieldErrors>({})
+  const [formError, setFormError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+
+  /** Only staff belong to a gym; a member joins one. */
+  const isStaff = role !== 'member'
 
   const strength = useMemo(() => scorePassword(password), [password])
 
   function validate(): FieldErrors {
     const next: FieldErrors = {}
     if (!name.trim()) next.name = 'Enter your full name.'
-    if (!gym.trim()) next.gym = 'Enter your gym or studio name.'
+    if (isStaff && !gym.trim()) next.gym = 'Enter your gym or studio name.'
     if (!email.trim()) {
       next.email = 'Enter your work email.'
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       next.email = 'That email address looks incomplete.'
     }
-    if (password.length < 8) {
-      next.password = 'Use at least 8 characters.'
+    // Twelve, matching the server. Eight would pass here and then be rejected
+    // there, which reads as the form being broken.
+    if (password.length < 12) {
+      next.password = 'Use at least 12 characters — length matters more than symbols.'
     }
     if (!accepted) {
       next.terms = 'Please accept the terms to continue.'
@@ -74,12 +100,70 @@ export function SignupForm() {
     if (Object.keys(found).length > 0) return
 
     setPending(true)
-    await new Promise((resolve) => setTimeout(resolve, 600))
-    router.push('/dashboard')
+    setFormError(null)
+    try {
+      const { token, user } = await api.auth.signUp.mutate({
+        name,
+        email,
+        password,
+        role,
+        gym: isStaff ? gym : undefined,
+      })
+      writeSession({ token, user })
+      router.push(user.landing)
+    } catch (error) {
+      setFormError(
+        error instanceof Error ? error.message : 'Could not create the account.',
+      )
+      setPending(false)
+    }
   }
 
   return (
     <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
+      {formError && (
+        <p
+          role="alert"
+          className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+        >
+          {formError}
+        </p>
+      )}
+
+      {/* Radios rather than a dropdown: four options, and the hint under each
+          is the part that actually tells someone which they are. */}
+      <fieldset className="flex flex-col gap-2">
+        <legend className="mb-2 text-sm font-medium text-foreground">
+          I&apos;m signing up as
+        </legend>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {ROLE_CHOICES.map((choice) => (
+            <label
+              key={choice.id}
+              className={cn(
+                'flex cursor-pointer flex-col gap-0.5 rounded-xl border px-3.5 py-3 transition-colors',
+                role === choice.id
+                  ? 'border-brand bg-brand-soft'
+                  : 'border-border bg-card hover:border-border-strong',
+              )}
+            >
+              <span className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="role"
+                  value={choice.id}
+                  checked={role === choice.id}
+                  onChange={() => setRole(choice.id)}
+                  className="size-4 accent-brand"
+                />
+                <span className="text-sm font-medium text-foreground">{choice.label}</span>
+              </span>
+              <span className="pl-6 text-xs text-muted-foreground">{choice.hint}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
       <div className="grid gap-5 sm:grid-cols-2">
         <div className="flex flex-col gap-2">
           <Label htmlFor="name" className="text-sm">
@@ -103,7 +187,11 @@ export function SignupForm() {
           )}
         </div>
 
-        <div className="flex flex-col gap-2">
+        {/* Staff only. A member joining a gym has no organisation to name, and
+            asking anyway makes the form look like it was built for someone
+            else. Hidden rather than disabled — a greyed-out box still reads as
+            something you failed to fill in. */}
+        <div className={cn('flex flex-col gap-2', !isStaff && 'hidden')}>
           <Label htmlFor="gym" className="text-sm">
             Gym name
           </Label>

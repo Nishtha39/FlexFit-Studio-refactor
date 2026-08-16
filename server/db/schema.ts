@@ -43,6 +43,7 @@ import type {
   ReservationStatus,
   ServiceKind,
   StaffRole,
+  AuthRole,
   WorkItemStatus,
   WorkQueue,
 } from '@/lib/types'
@@ -662,4 +663,58 @@ export const paymentRelations = relations(payments, ({ one }) => ({
 export const leadRelations = relations(leads, ({ one }) => ({
   owner: one(staff, { fields: [leads.ownerId], references: [staff.id] }),
   interestedPlan: one(plans, { fields: [leads.interestedPlanId], references: [plans.id] }),
+}))
+
+
+// ---------------------------------------------------------------------------
+// Accounts and sessions (authentication)
+//
+// Separate from `staff` and `members` on purpose. Those tables describe people
+// the gym deals with — a trainer who left still has classes in the history, a
+// cancelled member still has payments — whereas an account is a credential that
+// can be created, revoked and rotated without touching that record. Joining the
+// two would mean a departed trainer either keeps a working login or loses their
+// history.
+//
+// `role` is the authority the app reads. It matches the four roles the shell
+// already ships (components/shell/role-context.tsx), so a signed-in account
+// lands on the same screen the role switcher would have shown.
+// ---------------------------------------------------------------------------
+
+export const accounts = sqliteTable(
+  'accounts',
+  {
+    id: text('id').primaryKey(),
+    /** Stored lower-cased; the unique index is what stops duplicate signups. */
+    email: text('email').notNull().unique(),
+    name: text('name').notNull(),
+    role: text('role').$type<AuthRole>().notNull(),
+    /** PBKDF2-HMAC-SHA256, hex. See server/auth/password.ts. */
+    passwordHash: text('password_hash').notNull(),
+    /** Per-password, not a secret — it exists so equal passwords differ. */
+    passwordSalt: text('password_salt').notNull(),
+    /** Set at signup for staff roles; the gym a front-desk account belongs to. */
+    gym: text('gym'),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => [index('accounts_email_idx').on(t.email)],
+)
+
+export const sessions = sqliteTable(
+  'sessions',
+  {
+    /** 256 bits from crypto.getRandomValues — the bearer token itself. */
+    token: text('token').primaryKey(),
+    accountId: text('account_id')
+      .notNull()
+      .references(() => accounts.id),
+    createdAt: text('created_at').notNull(),
+    /** ISO timestamp. Checked on every read; expiry is not a background job. */
+    expiresAt: text('expires_at').notNull(),
+  },
+  (t) => [index('sessions_account_idx').on(t.accountId)],
+)
+
+export const sessionRelations = relations(sessions, ({ one }) => ({
+  account: one(accounts, { fields: [sessions.accountId], references: [accounts.id] }),
 }))

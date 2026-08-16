@@ -5,6 +5,7 @@
  * rather than a 404 in production.
  */
 import { initTRPC, TRPCError } from '@trpc/server'
+import { ZodError } from 'zod'
 import type { Db, Env } from '../db/client'
 import { getDb } from '../db/client'
 import { events } from '../db/schema'
@@ -20,6 +21,13 @@ export interface Context {
    * see README-BACKEND.md for what that would take.
    */
   actor: string
+  /**
+   * The session bearer token, if the caller sent one. Unlike `actor` this is a
+   * claim the server can check — auth.me resolves it against the sessions table
+   * — but note that only the auth router reads it today. The other procedures
+   * still authorise nothing; see the note at the top of routers/auth.ts.
+   */
+  sessionToken: string | null
 }
 
 export function createContext(env: Env, req: Request): Context {
@@ -27,10 +35,30 @@ export function createContext(env: Env, req: Request): Context {
     db: getDb(env),
     env,
     actor: req.headers.get('x-flexfit-actor') ?? 'system',
+    sessionToken: req.headers.get('x-flexfit-session'),
   }
 }
 
-const t = initTRPC.context<Context>().create()
+const t = initTRPC.context<Context>().create({
+  /**
+   * Zod puts its issues in `error.cause` and leaves `message` as the JSON dump
+   * of the whole issue array. The auth forms render `error.message` straight
+   * into the page, so without this a mistyped password shows the user
+   * `[{"origin":"string","code":"too_small",...}]` instead of the sentence the
+   * schema actually carries.
+   *
+   * The first issue, not all of them: the forms mark fields individually and a
+   * concatenated list reads as noise above a form that already says where the
+   * problem is.
+   */
+  errorFormatter({ shape, error }) {
+    if (error.cause instanceof ZodError) {
+      const first = error.cause.issues[0]
+      if (first) return { ...shape, message: first.message }
+    }
+    return shape
+  },
+})
 
 export const router = t.router
 export const publicProcedure = t.procedure

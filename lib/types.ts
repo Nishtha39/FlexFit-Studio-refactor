@@ -21,6 +21,17 @@ export interface Location {
 // ---------------------------------------------------------------------------
 export type StaffRole = "owner" | "manager" | "trainer" | "front-desk"
 
+/**
+ * Who an account signs in as.
+ *
+ * Deliberately not StaffRole. That describes a job on the payroll and has no
+ * "member" — the people who make up most of the sign-ins. These four are the
+ * roles the shell already reshapes itself around
+ * (components/shell/role-context.tsx), and each one has a landing screen there,
+ * so authenticating to one of these values is enough to route a person home.
+ */
+export type AuthRole = "owner" | "front_desk" | "trainer" | "member"
+
 export interface Staff {
   id: ID
   firstName: string
